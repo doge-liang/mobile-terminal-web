@@ -200,6 +200,17 @@ setInterval(() => {
   }
 }, 10000).unref();
 
+// --- client latency metrics (browser-measured RTT, reported every 60s) ---
+const METRICS_FILE = path.join(__dirname, 'metrics', 'latency.jsonl');
+const METRICS_MAX_BYTES = 10 << 20;
+fs.mkdirSync(path.dirname(METRICS_FILE), { recursive: true });
+function appendMetric(rec) {
+  fs.appendFile(METRICS_FILE, JSON.stringify(rec) + '\n', () => {});
+}
+function percentile(sorted, p) {
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+}
+
 function readBodyRaw(req, limit = 1 << 20) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -229,6 +240,10 @@ setInterval(() => {
       const p = path.join(UPLOAD_DIR, f);
       fs.stat(p, (e, st) => { if (!e && Date.now() - st.mtimeMs > UPLOAD_KEEP_MS) fs.unlink(p, () => {}); });
     }
+  });
+  // rotate the metrics log at 10MB (single .1 generation kept)
+  fs.stat(METRICS_FILE, (e, st) => {
+    if (!e && st.size > METRICS_MAX_BYTES) fs.rename(METRICS_FILE, METRICS_FILE + '.1', () => {});
   });
 }, 3600 * 1000).unref();
 
@@ -294,6 +309,78 @@ const requestHandler = async (req, res) => {
   if (url.pathname.startsWith('/t/')) {
     const auth = await verifyAuth(req);
     if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
+
+    if (req.method === 'POST' && url.pathname === '/t/metrics') {
+      let body = {};
+      try { body = JSON.parse(await readBody(req, 64 * 1024)); } catch { return json(res, 400, { error: 'bad json' }); }
+      const rtts = (Array.isArray(body.samples) ? body.samples : [])
+        .map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n < 60000).slice(0, 120);
+      if (!rtts.length) return json(res, 400, { error: 'no samples' });
+      const sorted = [...rtts].sort((a, b) => a - b);
+      const rec = {
+        ts: new Date().toISOString(),
+        email: auth.email,
+        host: String(req.headers.host || '').slice(0, 100),
+        transport: String(body.transport || '?').slice(0, 10),
+        ua: String(body.ua || req.headers['user-agent'] || '').slice(0, 120),
+        n: rtts.length,
+        min: sorted[0],
+        p50: percentile(sorted, 0.5),
+        p95: percentile(sorted, 0.95),
+        max: sorted[sorted.length - 1],
+        avg: Math.round(rtts.reduce((a, b) => a + b, 0) / rtts.length),
+        reconnects: Math.max(0, Math.min(10000, body.reconnects | 0)),
+      };
+      appendMetric(rec);
+      console.log(`[metric] ${rec.email} ${rec.host} ${rec.transport} avg=${rec.avg}ms p50=${rec.p50} p95=${rec.p95} n=${rec.n} rc=${rec.reconnects}`);
+      return json(res, 200, {});
+    }
+
+    if (req.method === 'GET' && url.pathname === '/t/metrics/summary') {
+      const hours = Math.max(1, Math.min(24 * 30, parseInt(url.searchParams.get('hours'), 10) || 24));
+      const cutoff = Date.now() - hours * 3600 * 1000;
+      let lines = [];
+      try {
+        // tail the file: last 1MB is plenty for a summary
+        const st = await fs.promises.stat(METRICS_FILE);
+        const fd = await fs.promises.open(METRICS_FILE, 'r');
+        const start = Math.max(0, st.size - (1 << 20));
+        const { buffer, bytesRead } = await fd.read(Buffer.alloc(1 << 20), 0, 1 << 20, start);
+        await fd.close();
+        lines = buffer.toString('utf8', 0, bytesRead).split('\n').filter(Boolean);
+        if (start > 0) lines.shift(); // drop the partial first line
+      } catch { /* no data yet */ }
+      const groups = {};
+      for (const line of lines) {
+        let r;
+        try { r = JSON.parse(line); } catch { continue; }
+        if (new Date(r.ts).getTime() < cutoff) continue;
+        const key = `${r.host} | ${r.transport}`;
+        const g = groups[key] || (groups[key] = { reports: 0, samples: 0, avgSum: 0, p50s: [], p95s: [], min: Infinity, max: 0, reconnects: 0, lastSeen: '' });
+        g.reports++;
+        g.samples += r.n;
+        g.avgSum += r.avg * r.n;
+        g.p50s.push(r.p50);
+        g.p95s.push(r.p95);
+        g.min = Math.min(g.min, r.min);
+        g.max = Math.max(g.max, r.max);
+        g.reconnects += r.reconnects;
+        if (r.ts > g.lastSeen) g.lastSeen = r.ts;
+      }
+      const summary = Object.entries(groups).map(([key, g]) => ({
+        key,
+        reports: g.reports,
+        samples: g.samples,
+        avg: Math.round(g.avgSum / g.samples),
+        p50: percentile(g.p50s.sort((a, b) => a - b), 0.5),
+        p95: percentile(g.p95s.sort((a, b) => a - b), 0.95),
+        min: g.min,
+        max: g.max,
+        reconnects: g.reconnects,
+        lastSeen: g.lastSeen,
+      })).sort((a, b) => (a.key < b.key ? -1 : 1));
+      return json(res, 200, { hours, summary });
+    }
 
     if (req.method === 'POST' && url.pathname === '/t/upload') {
       const mime = (req.headers['content-type'] || '').split(';')[0].trim();

@@ -48,3 +48,7 @@ systemctl enable --now mobile-terminal
 3. **长轮询 + POST**（`/t/poll` + `/t/in`）——最后兜底，纯普通 HTTPS 请求，能开网页就能用
 
 服务端对 pty 输出做 10ms 合并降低小包数量；HTTP 会话（`POST /t/open` 返回 `sid`）在无下行消费者 45 秒后回收 pty（tmux 会话本身不受影响）。状态栏实时显示当前传输方式与平滑 RTT，如 `已连接 (SSE) 230ms`。
+
+## 延迟遥测
+
+客户端把实测 RTT 每 60 秒上报一次（页面关闭时 sendBeacon 补报）：`POST /t/metrics`，服务端算好 min/p50/p95/max/avg 追加到 `metrics/latency.jsonl`（10MB 轮转，git 忽略），并向 journal 打 `[metric]` 摘要行（`journalctl -u mobile-terminal -f | grep metric` 可实时观察）。聚合查询：`GET /t/metrics/summary?hours=24`，按"入口域名 × 传输方式"分组，直接对比 CF 通道 vs 快速通道、WS vs SSE vs 轮询的真实延迟与重连次数。

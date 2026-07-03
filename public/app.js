@@ -52,9 +52,33 @@
   const altBtn = document.getElementById('key-alt');
 
   let rttMs = null;
+  let rttSamples = [];
+  let reconnects = 0;
+  let transportLabel = '?';
   function noteRtt(ms) {
     rttMs = rttMs === null ? ms : Math.round(rttMs * 0.7 + ms * 0.3); // smoothed
+    rttSamples.push(Math.round(ms));
+    if (rttSamples.length > 120) rttSamples.shift();
   }
+
+  // report measured RTTs to the server every 60s (and on page close) so latency
+  // per entry-domain / transport can be analyzed server-side: /t/metrics/summary
+  function reportMetrics(useBeacon) {
+    if (!rttSamples.length) return;
+    const payload = JSON.stringify({
+      samples: rttSamples,
+      transport: transportLabel,
+      reconnects,
+      ua: navigator.userAgent.slice(0, 120),
+    });
+    rttSamples = [];
+    if (useBeacon && navigator.sendBeacon) {
+      navigator.sendBeacon('/t/metrics', new Blob([payload], { type: 'application/json' }));
+    } else {
+      fetchT('/t/metrics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }, 10000).catch(() => {});
+    }
+  }
+  setInterval(() => reportMetrics(false), 60000);
   function setStatus(on, text) {
     statusEl.className = on ? 'on' : 'off';
     statusEl.textContent = on && rttMs !== null ? `${text} ${rttMs}ms` : text;
@@ -267,10 +291,11 @@
     fit.fit();
 
     const hooks = {
-      onUp: (label) => { retryMs = 500; setStatus(true, `已连接 (${label})`); term.focus(); },
+      onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); term.focus(); },
       onData: (d) => term.write(d),
       onDown: () => {
         transport = null;
+        reconnects++;
         setStatus(false, '已断开，重连中…');
         setTimeout(connect, retryMs);
         retryMs = Math.min(retryMs * 2, 8000);
@@ -377,7 +402,10 @@
     if (!transport) connect();
     else if (transport.ping) transport.ping();
   });
-  window.addEventListener('pagehide', () => { if (transport) transport.close(); });
+  window.addEventListener('pagehide', () => {
+    reportMetrics(true);
+    if (transport) transport.close();
+  });
 
   // --- toolbar keys ---
   const ESCAPES = { '\\x1b': '\x1b', '\\t': '\t', '\\x03': '\x03', '\\x04': '\x04' };
