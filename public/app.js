@@ -47,11 +47,24 @@
   }
 
   // ------------------------------------------------------------------
-  // transports — each returns a handle {send(str), resize(c,r), close()}
+  // transports — each returns a handle {send(str), resize(c,r), close(), ping?()}
   // and calls hooks: onUp(label), onDown(), onData(strOrBytes)
+  //
+  // The direct (non-CDN) path can be silently blackholed by middleboxes: the
+  // connection looks open but nothing flows. Every transport therefore has a
+  // liveness watchdog and every fetch a timeout, so a dead link tears itself
+  // down within seconds and reconnection (or transport downgrade) kicks in.
   // ------------------------------------------------------------------
   const WS_PROBE_MS = 4000;
   const SSE_PROBE_MS = 4000;
+  const WS_STALE_MS = 25000;   // no pong/data for this long => link is dead
+  const SSE_STALE_MS = 45000;  // server sends a real "ka" event every 20s
+
+  function fetchT(url, opts = {}, ms = 10000) {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), ms);
+    return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+  }
 
   function tryWebSocket(hooks) {
     return new Promise((resolve) => {
@@ -61,21 +74,31 @@
       let opened = false;
       const probe = setTimeout(() => { if (!opened) { ws.close(); resolve(null); } }, WS_PROBE_MS);
 
+      let lastAlive = Date.now();
       ws.onopen = () => {
         opened = true;
+        lastAlive = Date.now();
         clearTimeout(probe);
         const pinger = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'ping', ts: Date.now() }));
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ t: 'ping', ts: Date.now() }));
+          if (Date.now() - lastAlive > WS_STALE_MS) ws.close(); // blackholed: force reconnect
         }, 10000);
         hooks.onUp('WS');
         resolve({
           send: (d) => ws.send(JSON.stringify({ t: 'i', d })),
           resize: (cols, rows) => ws.send(JSON.stringify({ t: 'r', cols, rows })),
           close: () => { clearInterval(pinger); ws.onclose = null; ws.close(); },
+          ping: () => { // foreground-return probe: dead within 3s => reconnect
+            if (ws.readyState !== WebSocket.OPEN) return ws.close();
+            ws.send(JSON.stringify({ t: 'ping', ts: Date.now() }));
+            setTimeout(() => { if (Date.now() - lastAlive > 3000) ws.close(); }, 3000);
+          },
           _pinger: pinger,
         });
       };
       ws.onmessage = (ev) => {
+        lastAlive = Date.now();
         if (ev.data instanceof ArrayBuffer) return hooks.onData(new Uint8Array(ev.data));
         try {
           const m = JSON.parse(ev.data);
@@ -95,11 +118,11 @@
     let sid;
     try {
       const t0 = Date.now();
-      const r = await fetch('/t/open', {
+      const r = await fetchT('/t/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session: sessionName, cols: term.cols, rows: term.rows }),
-      });
+      }, 8000);
       if (!r.ok) return null;
       noteRtt(Date.now() - t0);
       sid = (await r.json()).sid;
@@ -108,10 +131,19 @@
     }
 
     let alive = true;
+    function teardown() {
+      if (!alive) return;
+      alive = false;
+      clearInterval(sseWatch);
+      if (es) es.close();
+      hooks.onDown();
+    }
+
     // serialized input queue: keystrokes arriving while a POST is in flight
     // get coalesced into the next POST, preserving order
     let inQueue = [];
     let inFlight = false;
+    let inFailures = 0;
     async function pump() {
       if (inFlight || !inQueue.length || !alive) return;
       inFlight = true;
@@ -126,24 +158,37 @@
       if (data) body.d = data;
       try {
         const t0 = Date.now();
-        await fetch(`/t/in?sid=${sid}`, {
+        await fetchT(`/t/in?sid=${sid}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
-        });
+        }, 10000);
         noteRtt(Date.now() - t0);
-      } catch { /* dropped input is retried by the user; connection loss surfaces via downstream */ }
+        inFailures = 0;
+      } catch {
+        // put the batch back (front, order preserved) and retry; a persistently
+        // dead link tears the transport down so reconnection can take over
+        inQueue = batch.concat(inQueue);
+        if (++inFailures >= 3) { inFlight = false; return teardown(); }
+      }
       inFlight = false;
       pump();
     }
 
+    let sseWatch = null;
     const handle = {
       send: (d) => { inQueue.push({ d }); pump(); },
       resize: (cols, rows) => { inQueue.push({ r: { cols, rows } }); pump(); },
       close: () => {
         alive = false;
+        clearInterval(sseWatch);
         if (es) es.close();
         navigator.sendBeacon && navigator.sendBeacon(`/t/close?sid=${sid}`);
+      },
+      ping: () => { // foreground-return probe: unreachable => reconnect
+        fetchT(`/t/in?sid=${sid}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 5000)
+          .then((r) => { if (r.status === 404) teardown(); })
+          .catch(() => teardown());
       },
     };
 
@@ -160,9 +205,12 @@
         };
       });
       if (sseOk && es) {
-        es.onmessage = (ev) => hooks.onData(JSON.parse(ev.data));
-        es.addEventListener('exit', () => { alive = false; hooks.onDown(); });
-        es.onerror = () => { if (alive) { alive = false; hooks.onDown(); } };
+        let lastSse = Date.now();
+        es.onmessage = (ev) => { lastSse = Date.now(); hooks.onData(JSON.parse(ev.data)); };
+        es.addEventListener('ka', () => { lastSse = Date.now(); }); // server liveness beacon (20s cadence)
+        es.addEventListener('exit', teardown);
+        es.onerror = () => teardown();
+        sseWatch = setInterval(() => { if (Date.now() - lastSse > SSE_STALE_MS) teardown(); }, 10000);
         hooks.onUp('SSE');
         return handle;
       }
@@ -173,7 +221,7 @@
       let failures = 0;
       while (alive) {
         try {
-          const r = await fetch(`/t/poll?sid=${sid}`);
+          const r = await fetchT(`/t/poll?sid=${sid}`, {}, 35000); // server holds 25s
           if (r.status === 404) break; // session GC'd
           const m = await r.json();
           failures = 0;
@@ -184,7 +232,7 @@
           await new Promise((ok) => setTimeout(ok, 1000 * failures));
         }
       }
-      if (alive) { alive = false; hooks.onDown(); }
+      teardown();
     })();
     hooks.onUp('轮询');
     return handle;
@@ -307,9 +355,12 @@
   window.addEventListener('resize', applyViewport);
   window.addEventListener('orientationchange', () => setTimeout(applyViewport, 300));
 
-  // reconnect promptly when the app returns to the foreground
+  // returning to the foreground: reconnect if down, otherwise actively probe —
+  // a connection blackholed while backgrounded looks open but is dead
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !transport) connect();
+    if (document.visibilityState !== 'visible') return;
+    if (!transport) connect();
+    else if (transport.ping) transport.ping();
   });
   window.addEventListener('pagehide', () => { if (transport) transport.close(); });
 

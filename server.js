@@ -311,7 +311,9 @@ const requestHandler = async (req, res) => {
       res.write('event: hello\ndata: {}\n\n'); // client uses this to confirm streaming works
       if (s.sse) try { s.sse.end(); } catch {}
       s.sse = res;
-      const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, SSE_KEEPALIVE_MS);
+      // real event, not a comment: EventSource can't see comments, and the client
+      // uses these as a liveness signal to detect silently-blackholed connections
+      const ka = setInterval(() => { try { res.write('event: ka\ndata: {}\n\n'); } catch {} }, SSE_KEEPALIVE_MS);
       req.on('close', () => {
         clearInterval(ka);
         if (s.sse === res) s.sse = null;
