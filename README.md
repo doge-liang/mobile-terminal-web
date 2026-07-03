@@ -33,6 +33,10 @@ systemctl enable --now mobile-terminal
 
 ## 传输协议
 
-使用 socket.io（engine.io）：**先以 HTTP 长轮询建立连接**（纯普通 HTTPS 请求，任何能打开网页的网络都可用），后台探测 WebSocket，探测成功才无缝升级；在封锁 WebSocket 的受限网络（企业代理、酒店/校园网等）中自动停留在轮询模式。状态栏会显示当前传输方式（`WS` / `轮询`）。
+自研三档降级链，客户端按能力从高到低逐个探测（每档 4 秒超时），用第一个可用的：
 
-事件：客户端 → 服务端 `i`（输入字符串）、`r`（`{cols, rows}` 调整尺寸）；服务端 → 客户端 `o`（终端原始输出）。tmux 会话名、初始尺寸经握手 `auth` 传递。
+1. **WebSocket**（`/ws`）——双向长连接，延迟最低。二进制帧 = 终端输出，文本帧 = 控制消息（ping/pong 测 RTT）
+2. **SSE + POST**（`/t/sse` + `/t/in`）——下行是单个持续的 HTTP 流（Server-Sent Events），输出连续推送、无轮询空窗；上行按键经串行化+合批的 POST 发送。绝大多数封 WebSocket 的代理都放行 SSE
+3. **长轮询 + POST**（`/t/poll` + `/t/in`）——最后兜底，纯普通 HTTPS 请求，能开网页就能用
+
+服务端对 pty 输出做 10ms 合并降低小包数量；HTTP 会话（`POST /t/open` 返回 `sid`）在无下行消费者 45 秒后回收 pty（tmux 会话本身不受影响）。状态栏实时显示当前传输方式与平滑 RTT，如 `已连接 (SSE) 230ms`。
