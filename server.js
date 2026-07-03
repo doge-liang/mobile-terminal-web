@@ -385,9 +385,22 @@ const requestHandler = async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/t/upload') {
       const mime = (req.headers['content-type'] || '').split(';')[0].trim();
       const ext = IMG_EXT[mime];
-      if (!ext) return json(res, 415, { error: 'unsupported type' });
+      if (!ext) {
+        console.log(`[upload] rejected: type "${mime}" from ${auth.email}`);
+        return json(res, 415, { error: `unsupported type: ${mime}` });
+      }
+      // reject oversize via Content-Length BEFORE reading — killing the socket
+      // mid-body surfaces as an opaque "network error" in browsers
+      const declared = parseInt(req.headers['content-length'], 10) || 0;
+      if (declared > UPLOAD_MAX) {
+        console.log(`[upload] rejected: ${Math.round(declared / 1048576)}MB > 15MB from ${auth.email}`);
+        return json(res, 413, { error: `too large: ${Math.round(declared / 1048576)}MB (max 15MB)` });
+      }
       let buf;
-      try { buf = await readBodyRaw(req, UPLOAD_MAX); } catch { return json(res, 413, { error: 'too large (max 15MB)' }); }
+      try { buf = await readBodyRaw(req, UPLOAD_MAX); } catch {
+        console.log(`[upload] rejected: body exceeded 15MB mid-stream from ${auth.email}`);
+        return json(res, 413, { error: 'too large (max 15MB)' });
+      }
       if (!buf.length) return json(res, 400, { error: 'empty body' });
       const name = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
       const dest = path.join(UPLOAD_DIR, name);

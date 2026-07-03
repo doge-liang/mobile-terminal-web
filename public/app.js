@@ -440,17 +440,39 @@
     setTimeout(() => { sessionEl.textContent = `tmux: ${sessionName}`; }, ms);
   }
 
-  async function uploadImage(file) {
-    if (!file || !file.type.startsWith('image/')) return;
+  // multi-MP phone photos are 10-25MB — pointless for a terminal and beyond the
+  // server cap. Re-encode to <=2560px JPEG before uploading (usually <1MB).
+  async function shrinkImage(file) {
+    if (file.size < 1.5e6 && file.type !== 'image/heic') return file;
+    try {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, 2560 / Math.max(bmp.width, bmp.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bmp.width * scale);
+      canvas.height = Math.round(bmp.height * scale);
+      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      bmp.close();
+      const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', 0.85));
+      return blob && blob.size < file.size ? blob : file;
+    } catch {
+      return file; // e.g. HEIC on non-Safari: browser can't decode, send as-is
+    }
+  }
+
+  async function uploadImage(orig) {
+    if (!orig || !orig.type.startsWith('image/')) return;
+    flashNote('处理图片中…', 30000);
+    const file = await shrinkImage(orig);
+    if (file.size > 15 << 20) { flashNote('图片太大（>15MB）且无法压缩，试试截图'); return; }
     flashNote(`上传中… (${Math.round(file.size / 1024)}KB)`, 30000);
     try {
       const r = await fetchT('/t/upload', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 60000);
-      const m = await r.json();
-      if (!r.ok) { flashNote(`上传失败: ${m.error || r.status}`); return; }
+      const m = await r.json().catch(() => ({}));
+      if (!r.ok) { flashNote(`上传失败: ${m.error || 'HTTP ' + r.status}`); return; }
       send(m.path + ' '); // type the path at the cursor; TUIs pick it up from the prompt
       flashNote('已插入图片路径');
-    } catch {
-      flashNote('上传失败: 网络错误');
+    } catch (e) {
+      flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
     }
     term.focus();
   }
