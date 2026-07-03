@@ -424,6 +424,23 @@
     imgInput.value = '';
   });
 
+  // clipboard button: mobile long-press paste menus don't hand images to web
+  // pages, but the async Clipboard API can read them (user gesture required)
+  document.getElementById('btn-clip').addEventListener('click', async () => {
+    if (!navigator.clipboard || !navigator.clipboard.read) return flashNote('浏览器不支持读剪贴板，请用 📷');
+    try {
+      const items = await navigator.clipboard.read();
+      let found = 0;
+      for (const item of items) {
+        const t = item.types.find((x) => x.startsWith('image/'));
+        if (t) { found++; uploadImage(await item.getType(t)); }
+      }
+      if (!found) flashNote('剪贴板里没有图片');
+    } catch {
+      flashNote('剪贴板读取被拒绝或为空');
+    }
+  });
+
   // desktop: pasting an image (Ctrl/Cmd+V) uploads it; text paste stays native
   document.addEventListener('paste', (e) => {
     const items = e.clipboardData && e.clipboardData.items;
