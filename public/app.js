@@ -29,6 +29,10 @@
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  // xterm.js defaults to Unicode 6 width tables — emoji and modern symbols get
+  // measured width-1 while tmux/apps lay them out width-2, garbling the UI
+  term.loadAddon(new Unicode11Addon.Unicode11Addon());
+  term.unicode.activeVersion = '11';
   term.open(document.getElementById('term'));
 
   let ctrlActive = false;

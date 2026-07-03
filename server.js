@@ -234,6 +234,7 @@ const VENDOR = {
   '/vendor/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/vendor/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
   '/vendor/addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
+  '/vendor/addon-unicode11.js': 'node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js',
 };
 
 const requestHandler = async (req, res) => {
