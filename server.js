@@ -246,6 +246,8 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
 };
 const VENDOR = {
   '/vendor/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
@@ -404,9 +406,10 @@ const requestHandler = async (req, res) => {
     res.writeHead(404);
     return res.end('not found');
   }
+  const longCache = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/');
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
-    'Cache-Control': url.pathname.startsWith('/vendor/') ? 'public, max-age=86400' : 'no-cache',
+    'Cache-Control': longCache ? 'public, max-age=2592000' : 'no-cache',
   });
   fs.createReadStream(filePath).pipe(res);
 };

@@ -36,6 +36,16 @@
   term.unicode.activeVersion = '11';
   term.open(document.getElementById('term'));
 
+  // Maple Mono NF CN is a ~6MB webfont: start with the system font, switch once
+  // loaded — xterm.js measures cell size from the font, so switching before the
+  // font is ready would garble the grid
+  document.fonts.load('1em "Maple Mono NF CN"').then((faces) => {
+    if (!faces.length) return; // font unavailable: stay on fallback
+    term.options.fontFamily = "'Maple Mono NF CN', ui-monospace, Menlo, Consolas, monospace";
+    fit.fit();
+    sendResize();
+  }).catch(() => {});
+
   let ctrlActive = false;
   let altActive = false;
   const ctrlBtn = document.getElementById('key-ctrl');

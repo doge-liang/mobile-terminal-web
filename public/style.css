@@ -1,3 +1,18 @@
+@font-face {
+  font-family: 'Maple Mono NF CN';
+  src: url('/fonts/MapleMono-NF-CN-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Maple Mono NF CN';
+  src: url('/fonts/MapleMono-NF-CN-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: #0d1117;
   --bar: #161b22;
@@ -13,7 +28,7 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Maple Mono NF CN', -apple-system, "Segoe UI", Roboto, sans-serif;
   overscroll-behavior: none;
   touch-action: manipulation;
 }
@@ -80,7 +95,7 @@ html, body {
   border-radius: 8px;
   color: var(--fg);
   font-size: 14px;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: 'Maple Mono NF CN', ui-monospace, Menlo, monospace;
   -webkit-user-select: none;
   user-select: none;
 }
