@@ -308,7 +308,14 @@ const requestHandler = async (req, res) => {
   // ------------------------- terminal HTTP API -------------------------
   if (url.pathname.startsWith('/t/')) {
     const auth = await verifyAuth(req);
-    if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
+    if (!auth.ok) {
+      // log every rejection with credential fingerprint — "who sent what" makes
+      // 403s attributable (and absence here proves a 403 came from elsewhere)
+      const hasCookie = !!parseCookies(req)[COOKIE_NAME];
+      const hasJwt = !!req.headers['cf-access-jwt-assertion'];
+      console.log(`[403] ${req.method} ${url.pathname} host=${req.headers.host} cookie=${hasCookie} jwt=${hasJwt} reason=${auth.reason}`);
+      return json(res, 403, { error: 'unauthorized', from: 'mobile-terminal-app' });
+    }
 
     if (req.method === 'POST' && url.pathname === '/t/metrics') {
       let body = {};

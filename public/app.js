@@ -468,7 +468,12 @@
     try {
       const r = await fetchT('/t/upload', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 60000);
       const m = await r.json().catch(() => ({}));
-      if (!r.ok) { flashNote(`上传失败: ${m.error || 'HTTP ' + r.status}`); return; }
+      if (!r.ok) {
+        // our own errors always carry {error}; anything else means an intermediary
+        // (e.g. Cloudflare WAF/Access on the CF entry) answered instead of the app
+        flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}（非应用响应，疑似被 Cloudflare 拦截）`, 6000);
+        return;
+      }
       send(m.path + ' '); // type the path at the cursor; TUIs pick it up from the prompt
       flashNote('已插入图片路径');
     } catch (e) {
