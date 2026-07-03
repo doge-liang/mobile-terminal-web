@@ -7,7 +7,8 @@
 (() => {
   const params = new URLSearchParams(location.search);
   let sessionName = (params.get('session') || localStorage.getItem('session') || 'mobile').replace(/[^\w-]/g, '');
-  let fontSize = parseInt(localStorage.getItem('fontSize'), 10) || 15;
+  const isPhone = Math.min(window.screen.width, window.screen.height) < 500;
+  let fontSize = parseInt(localStorage.getItem('fontSize'), 10) || (isPhone ? 12 : 15);
 
   const statusEl = document.getElementById('status');
   const sessionEl = document.getElementById('session-name');
@@ -247,6 +248,48 @@
   }
 
   term.onData((data) => send(transformInput(data)));
+
+  // --- touch scrolling ---
+  // tmux keeps history in its own scrollback (the terminal runs in the
+  // alternate buffer, so the browser-side viewport has nothing to scroll).
+  // Translate vertical swipes into mouse-wheel reports; tmux (mouse mode is
+  // enabled server-side on attach) then enters copy-mode and scrolls history.
+  const termContainer = document.getElementById('term');
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  let touchPos = null;
+
+  function swipeScroll(lines, t, rect) {
+    if (term.modes.mouseTrackingMode !== 'none') {
+      const col = clamp(Math.ceil((t.clientX - rect.left) / (rect.width / term.cols)), 1, term.cols);
+      const row = clamp(Math.ceil((t.clientY - rect.top) / (rect.height / term.rows)), 1, term.rows);
+      const btn = lines < 0 ? 64 : 65; // SGR wheel-up / wheel-down
+      send(`\x1b[<${btn};${col};${row}M`.repeat(Math.abs(lines)));
+    } else if (term.buffer.active.type === 'normal') {
+      term.scrollLines(lines); // plain program without mouse: scroll xterm's buffer
+    }
+  }
+
+  termContainer.addEventListener('touchstart', (e) => {
+    touchPos = e.touches.length === 1 ? { y: e.touches[0].clientY } : null;
+  }, { capture: true, passive: true });
+
+  termContainer.addEventListener('touchmove', (e) => {
+    if (!touchPos || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const screenEl = termContainer.querySelector('.xterm-screen');
+    if (!screenEl) return;
+    const rect = screenEl.getBoundingClientRect();
+    const cellH = rect.height / term.rows;
+    const lines = Math.trunc((t.clientY - touchPos.y) / cellH);
+    if (lines !== 0) {
+      touchPos.y += lines * cellH;
+      swipeScroll(-lines, t, rect); // finger moves down => reveal earlier output
+    }
+    e.preventDefault(); // suppress page scroll / pull-to-refresh / xterm's own handling
+    e.stopPropagation();
+  }, { capture: true, passive: false });
+
+  termContainer.addEventListener('touchend', () => { touchPos = null; }, { capture: true, passive: true });
 
   // --- layout: track the visual viewport so the toolbar rides above the soft keyboard ---
   function applyViewport() {

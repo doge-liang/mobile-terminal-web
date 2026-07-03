@@ -43,7 +43,9 @@ function clampCols(v) { return Math.max(2, Math.min(500, parseInt(v, 10) || 80))
 function clampRows(v) { return Math.max(2, Math.min(300, parseInt(v, 10) || 24)); }
 
 function spawnTmux(session, cols, rows) {
-  return pty.spawn('tmux', ['new-session', '-A', '-s', session], {
+  // "; set-option mouse on" runs after attach: wheel reports then scroll tmux's
+  // own scrollback (copy-mode) — that's how touch scrolling reaches history
+  return pty.spawn('tmux', ['new-session', '-A', '-s', session, ';', 'set-option', 'mouse', 'on'], {
     name: 'xterm-256color',
     cols,
     rows,
