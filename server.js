@@ -36,6 +36,70 @@ async function verifyAccessJwt(req) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fast-path auth: the direct (non-Cloudflare) domain can't rely on Access JWTs,
+// so it uses a signed cookie instead. Cookies are minted ONLY via /pair, which
+// itself requires a valid Access JWT — the email whitelist in Cloudflare Access
+// therefore remains the single gate for both domains.
+// ---------------------------------------------------------------------------
+const FAST_HOST = process.env.FAST_HOST || '';                                  // e.g. term-fast.doge-liang-space.uk
+const MAIN_HOST = process.env.MAIN_HOST || 'term.doge-liang-space.uk';          // Access-protected domain
+const COOKIE_NAME = 'mtw_auth';
+const COOKIE_TTL_S = 30 * 24 * 3600;
+const PAIR_TTL_S = 60;
+
+const SECRET_FILE = path.join(__dirname, '.auth-secret');
+let AUTH_SECRET = process.env.AUTH_SECRET || '';
+if (!AUTH_SECRET) {
+  try { AUTH_SECRET = fs.readFileSync(SECRET_FILE, 'utf8').trim(); } catch {}
+  if (!AUTH_SECRET) {
+    AUTH_SECRET = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(SECRET_FILE, AUTH_SECRET, { mode: 0o600 });
+  }
+}
+
+function sign(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const mac = crypto.createHmac('sha256', AUTH_SECRET).update(body).digest('base64url');
+  return `${body}.${mac}`;
+}
+
+function verifySigned(token) {
+  if (typeof token !== 'string') return null;
+  const [body, mac] = token.split('.');
+  if (!body || !mac) return null;
+  const expect = crypto.createHmac('sha256', AUTH_SECRET).update(body).digest('base64url');
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expect);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(body, 'base64url').toString());
+    return p.exp && p.exp > Date.now() / 1000 ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
+const usedPairIds = new Map(); // jti -> exp (pairing links are single-use)
+
+// Accept either a Cloudflare Access JWT (main domain) or our signed cookie (fast path)
+async function verifyAuth(req) {
+  const jwt = await verifyAccessJwt(req);
+  if (jwt.ok) return jwt;
+  const p = verifySigned(parseCookies(req)[COOKIE_NAME]);
+  if (p && p.typ === 'cookie') return { ok: true, email: p.email };
+  return { ok: false, reason: jwt.reason || 'no credentials' };
+}
+
 function sanitizeSession(name) {
   return String(name || DEFAULT_SESSION).replace(/[^\w-]/g, '').slice(0, 32) || DEFAULT_SESSION;
 }
@@ -130,6 +194,9 @@ setInterval(() => {
     const hasConsumer = s.sse || s.waiter;
     if (!hasConsumer && now - s.lastSeen > GC_IDLE_MS) destroyHttpSession(sid);
   }
+  for (const [jti, exp] of usedPairIds) {
+    if (exp < now / 1000) usedPairIds.delete(jti);
+  }
 }, 10000).unref();
 
 function readBody(req, limit = 1 << 20) {
@@ -171,9 +238,39 @@ const VENDOR = {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  // ------------------------- pairing (fast-path credentials) -------------------------
+  // JWT-only on purpose: only someone who passed the Access email whitelist
+  // (OTP on the main domain) can mint fast-path credentials.
+  if (url.pathname === '/pair' && req.method === 'GET') {
+    const auth = await verifyAccessJwt(req);
+    if (!auth.ok) return json(res, 403, { error: 'open /pair via the Access-protected domain' });
+    if (!FAST_HOST) return json(res, 400, { error: 'FAST_HOST not configured' });
+    const tk = sign({ typ: 'pair', email: auth.email, jti: crypto.randomUUID(), exp: Math.floor(Date.now() / 1000) + PAIR_TTL_S });
+    const dest = `https://${FAST_HOST}/pair/claim?tk=${encodeURIComponent(tk)}`;
+    console.log(`[${new Date().toISOString()}] ${auth.email} minted a fast-path pairing link`);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(`<!DOCTYPE html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${dest}"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><p>正在跳转到快速通道…</p><p><a style="color:#58a6ff" href="${dest}">没有自动跳转请点这里</a>（链接 60 秒内有效）</p>`);
+  }
+
+  if (url.pathname === '/pair/claim' && req.method === 'GET') {
+    const p = verifySigned(url.searchParams.get('tk'));
+    if (!p || p.typ !== 'pair' || usedPairIds.has(p.jti)) {
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!DOCTYPE html><meta charset="utf-8"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><p>配对链接无效或已过期。</p><p><a style="color:#58a6ff" href="https://${MAIN_HOST}/pair">重新配对</a></p>`);
+    }
+    usedPairIds.set(p.jti, p.exp);
+    const cookie = sign({ typ: 'cookie', email: p.email, exp: Math.floor(Date.now() / 1000) + COOKIE_TTL_S });
+    console.log(`[${new Date().toISOString()}] ${p.email} claimed fast-path cookie`);
+    res.writeHead(302, {
+      'Set-Cookie': `${COOKIE_NAME}=${cookie}; Max-Age=${COOKIE_TTL_S}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+      Location: '/',
+    });
+    return res.end();
+  }
+
   // ------------------------- terminal HTTP API -------------------------
   if (url.pathname.startsWith('/t/')) {
-    const auth = await verifyAccessJwt(req);
+    const auth = await verifyAuth(req);
     if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
 
     if (req.method === 'POST' && url.pathname === '/t/open') {
@@ -248,7 +345,15 @@ const server = http.createServer(async (req, res) => {
     return json(res, 404, { error: 'not found' });
   }
 
-  // ------------------------- static files -------------------------
+  // ------------------------- static files (auth-gated) -------------------------
+  {
+    const auth = await verifyAuth(req);
+    if (!auth.ok) {
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(`<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><h3>需要配对</h3><p>此入口的凭证要先通过邮箱验证获取：</p><p><a style="color:#58a6ff" href="https://${MAIN_HOST}/pair">用主域名完成邮箱验证并配对 →</a></p><p style="color:#8b949e;font-size:13px">完成后本设备 30 天内可直接访问此快速入口。</p>`);
+    }
+  }
+
   let filePath = null;
   if (VENDOR[url.pathname]) {
     filePath = path.join(__dirname, VENDOR[url.pathname]);
@@ -274,7 +379,7 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', async (req, socket, head) => {
-  const auth = await verifyAccessJwt(req);
+  const auth = await verifyAuth(req);
   if (!auth.ok) {
     console.error(`WS rejected: ${auth.reason}`);
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
