@@ -1,4 +1,5 @@
-/* mobile-terminal-web frontend */
+/* mobile-terminal-web frontend (socket.io transport: HTTP long-polling first,
+   auto-upgrades to WebSocket only when the network actually allows it) */
 (() => {
   const params = new URLSearchParams(location.search);
   let sessionName = (params.get('session') || localStorage.getItem('session') || 'mobile').replace(/[^\w-]/g, '');
@@ -25,8 +26,6 @@
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById('term'));
 
-  let ws = null;
-  let retryMs = 500;
   let ctrlActive = false;
   let altActive = false;
 
@@ -39,15 +38,41 @@
     sessionEl.textContent = `tmux: ${sessionName}`;
   }
 
+  // --- socket.io connection ---
+  fit.fit();
+  const socket = io({
+    transports: ['polling', 'websocket'],
+    upgrade: true,
+    auth: { session: sessionName, cols: term.cols, rows: term.rows },
+    reconnection: true,
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 8000,
+  });
+
+  function transportLabel() {
+    const t = socket.io.engine && socket.io.engine.transport.name;
+    return t === 'websocket' ? 'WS' : t === 'polling' ? '轮询' : '';
+  }
+
   function send(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'i', d: data }));
+    if (socket.connected) socket.emit('i', data);
   }
 
   function sendResize() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));
-    }
+    if (socket.connected) socket.emit('r', { cols: term.cols, rows: term.rows });
   }
+
+  socket.on('connect', () => {
+    setStatus(true, `已连接 (${transportLabel()})`);
+    sendResize();
+    term.focus();
+    socket.io.engine.on('upgrade', () => setStatus(true, `已连接 (${transportLabel()})`));
+  });
+  socket.on('o', (data) => term.write(data));
+  socket.on('disconnect', () => setStatus(false, '已断开，重连中…'));
+  socket.on('connect_error', (err) => {
+    setStatus(false, err.message === 'unauthorized' ? '认证失败，请刷新页面重新登录' : '连接失败，重试中…');
+  });
 
   // Apply sticky Ctrl/Alt modifiers to outgoing data
   function transformInput(data) {
@@ -68,26 +93,6 @@
 
   term.onData((data) => send(transformInput(data)));
 
-  function connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    fit.fit();
-    ws = new WebSocket(`${proto}://${location.host}/ws?session=${sessionName}&cols=${term.cols}&rows=${term.rows}`);
-
-    ws.onopen = () => {
-      retryMs = 500;
-      setStatus(true, '已连接');
-      sendResize();
-      term.focus();
-    };
-    ws.onmessage = (ev) => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
-    ws.onclose = () => {
-      setStatus(false, '已断开，重连中…');
-      setTimeout(connect, retryMs);
-      retryMs = Math.min(retryMs * 2, 8000);
-    };
-    ws.onerror = () => ws.close();
-  }
-
   // --- layout: track the visual viewport so the toolbar rides above the soft keyboard ---
   function applyViewport() {
     const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -106,9 +111,7 @@
 
   // reconnect promptly when the app returns to the foreground
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && (!ws || ws.readyState !== WebSocket.OPEN)) {
-      connect();
-    }
+    if (document.visibilityState === 'visible' && !socket.connected) socket.connect();
   });
 
   // --- toolbar keys ---
@@ -149,14 +152,11 @@
     if (!name) return;
     sessionName = name.replace(/[^\w-]/g, '') || 'mobile';
     localStorage.setItem('session', sessionName);
-    if (ws) {
-      ws.onclose = null;
-      ws.close();
-    }
+    socket.auth = { session: sessionName, cols: term.cols, rows: term.rows };
     term.reset();
-    connect();
+    socket.disconnect();
+    socket.connect();
   });
 
   applyViewport();
-  connect();
 })();

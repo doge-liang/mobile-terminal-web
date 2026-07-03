@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { WebSocketServer } = require('ws');
+const { Server: SocketIOServer } = require('socket.io');
 const pty = require('node-pty');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
@@ -42,6 +42,7 @@ const VENDOR = {
   '/vendor/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/vendor/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
   '/vendor/addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
+  '/vendor/socket.io.js': 'node_modules/socket.io/client-dist/socket.io.min.js',
 };
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -77,29 +78,43 @@ const server = http.createServer(async (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// --- websocket terminal ---
-const wss = new WebSocketServer({ noServer: true });
-
-server.on('upgrade', async (req, socket, head) => {
-  const auth = await verifyAccessJwt(req);
-  if (!auth.ok) {
-    console.error(`WS rejected: ${auth.reason}`);
-    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-    return socket.destroy();
-  }
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req, auth);
-  });
+// --- socket.io terminal ---
+// Transport order matters for restricted networks: plain HTTP long-polling is
+// accepted first (works through any proxy that can load the page), then the
+// client probes for a WebSocket upgrade in the background and switches only
+// if it actually works. pingInterval stays well under Cloudflare's ~100s
+// idle-connection cutoff.
+const io = new SocketIOServer(server, {
+  transports: ['polling', 'websocket'],
+  allowUpgrades: true,
+  pingInterval: 25000,
+  pingTimeout: 20000,
+  maxHttpBufferSize: 1 << 20,
+  serveClient: false,
 });
 
-wss.on('connection', (ws, req, auth) => {
-  const url = new URL(req.url, 'http://localhost');
-  // tmux session names: letters, digits, dash, underscore only
-  const session = (url.searchParams.get('session') || DEFAULT_SESSION).replace(/[^\w-]/g, '').slice(0, 32) || DEFAULT_SESSION;
-  const cols = Math.max(2, Math.min(500, parseInt(url.searchParams.get('cols'), 10) || 80));
-  const rows = Math.max(2, Math.min(300, parseInt(url.searchParams.get('rows'), 10) || 24));
+// Access JWT gate on the initial handshake. Every polling request and the WS
+// upgrade all pass through Cloudflare, which injects the JWT header; checking
+// the handshake is sufficient because the session id is bound to it.
+io.use(async (socket, next) => {
+  const auth = await verifyAccessJwt(socket.request);
+  if (!auth.ok) {
+    console.error(`handshake rejected: ${auth.reason}`);
+    return next(new Error('unauthorized'));
+  }
+  socket.data.email = auth.email;
+  next();
+});
 
-  console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux session "${session}" (${cols}x${rows})`);
+io.on('connection', (socket) => {
+  const q = socket.handshake.auth || {};
+  // tmux session names: letters, digits, dash, underscore only
+  const session = String(q.session || DEFAULT_SESSION).replace(/[^\w-]/g, '').slice(0, 32) || DEFAULT_SESSION;
+  const cols = Math.max(2, Math.min(500, parseInt(q.cols, 10) || 80));
+  const rows = Math.max(2, Math.min(300, parseInt(q.rows, 10) || 24));
+
+  console.log(`[${new Date().toISOString()}] ${socket.data.email} attached to tmux session "${session}" (${cols}x${rows}, transport=${socket.conn.transport.name})`);
+  socket.conn.on('upgrade', (t) => console.log(`[${new Date().toISOString()}] ${socket.data.email} transport upgraded to ${t.name}`));
 
   const term = pty.spawn('tmux', ['new-session', '-A', '-s', session], {
     name: 'xterm-256color',
@@ -109,29 +124,19 @@ wss.on('connection', (ws, req, auth) => {
     env: { ...process.env, TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
   });
 
-  term.onData((data) => {
-    if (ws.readyState === ws.OPEN) ws.send(data);
-  });
-  term.onExit(() => ws.close());
+  term.onData((data) => socket.emit('o', data));
+  term.onExit(() => socket.disconnect(true));
 
-  ws.on('message', (msg) => {
-    try {
-      const m = JSON.parse(msg.toString());
-      if (m.t === 'i') term.write(m.d);
-      else if (m.t === 'r') term.resize(Math.max(2, Math.min(500, m.cols | 0)), Math.max(2, Math.min(300, m.rows | 0)));
-      else if (m.t === 'ping' && ws.readyState === ws.OPEN) ws.send('\x00'.repeat(0)); // no-op keepalive reply not needed for term
-    } catch {
-      /* ignore malformed frames */
+  socket.on('i', (d) => {
+    if (typeof d === 'string') term.write(d);
+  });
+  socket.on('r', (m) => {
+    if (m && typeof m === 'object') {
+      term.resize(Math.max(2, Math.min(500, m.cols | 0)), Math.max(2, Math.min(300, m.rows | 0)));
     }
   });
 
-  // keepalive: Cloudflare drops idle websockets after ~100s
-  const ka = setInterval(() => {
-    if (ws.readyState === ws.OPEN) ws.ping();
-  }, 30000);
-
-  ws.on('close', () => {
-    clearInterval(ka);
+  socket.on('disconnect', () => {
     term.kill(); // kills the tmux *client*; the session stays alive on the server
   });
 });

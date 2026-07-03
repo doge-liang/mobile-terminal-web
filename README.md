@@ -31,7 +31,8 @@ systemctl enable --now mobile-terminal
 3. Zero Trust → Access → Applications：新建 self-hosted 应用覆盖该域名，策略只允许自己的邮箱，登录方式 One-time PIN
 4. 把应用的 AUD 和团队域名填入 `/etc/default/mobile-terminal`，重启服务
 
-## WebSocket 协议
+## 传输协议
 
-客户端 → 服务端（JSON）：`{"t":"i","d":"<输入>"}`、`{"t":"r","cols":80,"rows":24}`
-服务端 → 客户端：终端原始输出（UTF-8 文本帧）
+使用 socket.io（engine.io）：**先以 HTTP 长轮询建立连接**（纯普通 HTTPS 请求，任何能打开网页的网络都可用），后台探测 WebSocket，探测成功才无缝升级；在封锁 WebSocket 的受限网络（企业代理、酒店/校园网等）中自动停留在轮询模式。状态栏会显示当前传输方式（`WS` / `轮询`）。
+
+事件：客户端 → 服务端 `i`（输入字符串）、`r`（`{cols, rows}` 调整尺寸）；服务端 → 客户端 `o`（终端原始输出）。tmux 会话名、初始尺寸经握手 `auth` 传递。
