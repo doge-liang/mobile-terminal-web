@@ -1,6 +1,6 @@
 [Unit]
 Description=mobile-terminal-web (xterm.js + node-pty + tmux)
-After=network.target
+After=network.target wg-quick@wg1.service
 
 [Service]
 Type=simple

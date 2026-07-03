@@ -6,7 +6,8 @@ const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
-const HOST = process.env.HOST || '127.0.0.1';
+// comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
+const HOSTS = (process.env.HOST || '127.0.0.1').split(',').map((h) => h.trim()).filter(Boolean);
 const SHELL_CWD = process.env.SHELL_CWD || process.env.HOME || '/root';
 const DEFAULT_SESSION = process.env.TMUX_SESSION || 'mobile';
 
@@ -235,7 +236,7 @@ const VENDOR = {
   '/vendor/addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
 };
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
   // ------------------------- pairing (fast-path credentials) -------------------------
@@ -373,12 +374,12 @@ const server = http.createServer(async (req, res) => {
     'Cache-Control': url.pathname.startsWith('/vendor/') ? 'public, max-age=86400' : 'no-cache',
   });
   fs.createReadStream(filePath).pipe(res);
-});
+};
 
 // ------------------------- WebSocket transport (preferred) -------------------------
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', async (req, socket, head) => {
+const upgradeHandler = async (req, socket, head) => {
   const auth = await verifyAuth(req);
   if (!auth.ok) {
     console.error(`WS rejected: ${auth.reason}`);
@@ -386,7 +387,7 @@ server.on('upgrade', async (req, socket, head) => {
     return socket.destroy();
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, auth));
-});
+};
 
 wss.on('connection', (ws, req, auth) => {
   const url = new URL(req.url, 'http://localhost');
@@ -429,7 +430,12 @@ wss.on('connection', (ws, req, auth) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`mobile-terminal-web listening on http://${HOST}:${PORT}`);
-  console.log(CF_TEAM_DOMAIN ? `Access JWT verification: ON (${CF_TEAM_DOMAIN})` : 'Access JWT verification: OFF (local dev)');
-});
+for (const host of HOSTS) {
+  const server = http.createServer(requestHandler);
+  server.on('upgrade', upgradeHandler);
+  // a missing address (e.g. WireGuard interface still coming up) must not take
+  // down the listeners that did bind — log and keep running
+  server.on('error', (err) => console.error(`listen ${host}:${PORT} failed: ${err.message}`));
+  server.listen(PORT, host, () => console.log(`mobile-terminal-web listening on http://${host}:${PORT}`));
+}
+console.log(CF_TEAM_DOMAIN ? `Access JWT verification: ON (${CF_TEAM_DOMAIN})` : 'Access JWT verification: OFF (local dev)');

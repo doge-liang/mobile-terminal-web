@@ -28,7 +28,7 @@ systemctl enable --now mobile-terminal
 ## 双通道与认证模型
 
 - **主通道** `term.<domain>`：经 Cloudflare Tunnel + Access（邮箱 OTP 白名单），任何网络可用
-- **快速通道** `term-fast.<domain>`（可选）：DNS 直指跳板机（如搬瓦工 CN2-GIA），跳板上 Caddy 反代 → Tailscale(WireGuard) → 本机，绕开 Cloudflare 以改善国内延迟
+- **快速通道** `https://term-fast.<domain>:2096`：DNS 直指跳板机（搬瓦工 CN2-GIA，与本机同城 LA，跳板段 ~2ms），跳板上 Caddy（端口 2096，443/8443 被 xray 占用）反代 → WireGuard（`wg0`↔`wg1`，10.77.0.0/24）→ 本机 `10.77.0.1:7681`，绕开 Cloudflare 以改善国内延迟。本机 ufw 仅对 wg1 接口放行 7681，WireGuard 端口仅对跳板 IP 放行
 - **白名单唯一准入**：快速通道凭证只能通过配对获得——在主域名打开 `/pair`（先过 Access 邮箱 OTP）→ 签发一次性配对链接（60 秒、单次有效）→ 跳转快速域名种下 HMAC 签名 Cookie（30 天、HttpOnly/Secure）。伪造、过期、重放均被拒绝。吊销全部设备：删除 `.auth-secret` 并重启
 - 相关环境变量：`FAST_HOST`（快速域名）、`MAIN_HOST`（主域名）、`AUTH_SECRET`（可选，默认自动生成到 `.auth-secret`）
 
