@@ -1,0 +1,14 @@
+[Unit]
+Description=mobile-terminal-web (xterm.js + node-pty + tmux)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/mobile-terminal-web
+EnvironmentFile=-/etc/default/mobile-terminal
+ExecStart=/usr/bin/node /root/mobile-terminal-web/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
