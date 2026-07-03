@@ -200,7 +200,7 @@ setInterval(() => {
   }
 }, 10000).unref();
 
-function readBody(req, limit = 1 << 20) {
+function readBodyRaw(req, limit = 1 << 20) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -209,10 +209,28 @@ function readBody(req, limit = 1 << 20) {
       if (size > limit) { reject(new Error('body too large')); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
+const readBody = (req, limit) => readBodyRaw(req, limit).then((b) => b.toString('utf8'));
+
+// --- image uploads (browser clipboard/photos can't reach the server's clipboard;
+//     files are uploaded here and their path typed into the terminal instead) ---
+const UPLOAD_DIR = process.env.UPLOAD_DIR || '/root/uploads';
+const UPLOAD_MAX = 15 << 20;
+const UPLOAD_KEEP_MS = 7 * 24 * 3600 * 1000;
+const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/svg+xml': 'svg' };
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+setInterval(() => {
+  fs.readdir(UPLOAD_DIR, (err, files) => {
+    if (err) return;
+    for (const f of files) {
+      const p = path.join(UPLOAD_DIR, f);
+      fs.stat(p, (e, st) => { if (!e && Date.now() - st.mtimeMs > UPLOAD_KEEP_MS) fs.unlink(p, () => {}); });
+    }
+  });
+}, 3600 * 1000).unref();
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -274,6 +292,20 @@ const requestHandler = async (req, res) => {
   if (url.pathname.startsWith('/t/')) {
     const auth = await verifyAuth(req);
     if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
+
+    if (req.method === 'POST' && url.pathname === '/t/upload') {
+      const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+      const ext = IMG_EXT[mime];
+      if (!ext) return json(res, 415, { error: 'unsupported type' });
+      let buf;
+      try { buf = await readBodyRaw(req, UPLOAD_MAX); } catch { return json(res, 413, { error: 'too large (max 15MB)' }); }
+      if (!buf.length) return json(res, 400, { error: 'empty body' });
+      const name = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+      const dest = path.join(UPLOAD_DIR, name);
+      await fs.promises.writeFile(dest, buf);
+      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${name} (${buf.length} bytes)`);
+      return json(res, 200, { path: dest });
+    }
 
     if (req.method === 'POST' && url.pathname === '/t/open') {
       let body = {};

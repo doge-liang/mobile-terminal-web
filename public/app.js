@@ -19,6 +19,7 @@
     cursorBlink: true,
     allowProposedApi: true,
     scrollback: 5000,
+    macOptionIsMeta: true, // Mac browsers: Option+key sends ESC-key (Alt) instead of typing special chars
     theme: {
       background: '#0d1117',
       foreground: '#c9d1d9',
@@ -388,6 +389,49 @@
     altActive = !altActive;
     altBtn.classList.toggle('active', altActive);
     term.focus();
+  });
+
+  // --- image upload ---
+  // A browser's clipboard/photo library can't reach the server's clipboard, so
+  // "paste image" shortcuts inside server-side TUIs can never see it. Instead we
+  // upload the image over the existing (authenticated, encrypted) channel and
+  // type its server-side path into the terminal — TUIs like Claude Code accept
+  // image paths in the prompt.
+  function flashNote(text, ms = 3000) {
+    sessionEl.textContent = text;
+    setTimeout(() => { sessionEl.textContent = `tmux: ${sessionName}`; }, ms);
+  }
+
+  async function uploadImage(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    flashNote(`上传中… (${Math.round(file.size / 1024)}KB)`, 30000);
+    try {
+      const r = await fetchT('/t/upload', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 60000);
+      const m = await r.json();
+      if (!r.ok) { flashNote(`上传失败: ${m.error || r.status}`); return; }
+      send(m.path + ' '); // type the path at the cursor; TUIs pick it up from the prompt
+      flashNote('已插入图片路径');
+    } catch {
+      flashNote('上传失败: 网络错误');
+    }
+    term.focus();
+  }
+
+  const imgInput = document.getElementById('img-input');
+  document.getElementById('btn-img').addEventListener('click', () => imgInput.click());
+  imgInput.addEventListener('change', () => {
+    for (const f of imgInput.files) uploadImage(f);
+    imgInput.value = '';
+  });
+
+  // desktop: pasting an image (Ctrl/Cmd+V) uploads it; text paste stays native
+  document.addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const imgs = [...items].filter((i) => i.type.startsWith('image/'));
+    if (!imgs.length) return;
+    e.preventDefault();
+    for (const i of imgs) uploadImage(i.getAsFile());
   });
 
   // --- status bar buttons ---
