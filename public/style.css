@@ -152,26 +152,45 @@ html, body {
 .sp-label { color: #8b949e; font-size: 12px; margin-bottom: 8px; }
 .sp-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px 12px;
+  align-items: stretch;
   margin-bottom: 6px;
   background: #21262d;
   border: 1px solid var(--border);
   border-radius: 8px;
+  overflow: hidden;
+}
+.sp-row.current {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sp-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
   color: var(--fg);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.sp-row:active { background: var(--border); }
-.sp-row.current {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+.sp-pick:active { background: var(--border); }
+.sp-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.sp-meta { color: #8b949e; font-size: 12px; margin-left: 8px; white-space: nowrap; }
+.sp-del {
+  flex: none;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: #8b949e;
+  font-size: 13px;
+  cursor: pointer;
 }
-.sp-name { font-weight: 500; }
-.sp-meta { color: #8b949e; font-size: 12px; }
+.sp-del:active { background: rgba(248, 81, 73, 0.15); color: #f85149; }
 .sp-empty { color: #8b949e; font-size: 13px; padding: 8px 2px; }
 #sp-mru { display: flex; flex-wrap: wrap; gap: 8px; }
 .sp-chip {
