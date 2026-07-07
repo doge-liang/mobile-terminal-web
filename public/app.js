@@ -6,7 +6,13 @@
 */
 (() => {
   const params = new URLSearchParams(location.search);
-  let sessionName = (params.get('session') || localStorage.getItem('session') || 'mobile').replace(/[^\w-]/g, '');
+  const sanitizeName = (n) => String(n || '').replace(/[^\w-]/g, '').slice(0, 32);
+  // Per-tab session: sessionStorage keeps this tab's own session across refresh,
+  // independent of other tabs. Resolution order — explicit URL param, then this
+  // tab's last session, then the global "last used" (seeds a fresh tab), then default.
+  let sessionName = sanitizeName(
+    params.get('session') || sessionStorage.getItem('session') ||
+    localStorage.getItem('session') || 'mobile') || 'mobile';
   const isPhone = Math.min(window.screen.width, window.screen.height) < 500;
   let fontSize = parseInt(localStorage.getItem('fontSize'), 10) || (isPhone ? 12 : 15);
 
@@ -337,6 +343,102 @@
 
   term.onData((data) => send(transformInput(data)));
 
+  // --- copy / paste ---
+  // tmux mouse mode (enabled on attach for touch scrolling) swallows mouse drags
+  // as SGR reports, so the browser never forms a selection to copy — and Ctrl+C
+  // is the terminal interrupt, not copy. So we bridge the clipboard explicitly:
+  // Shift+drag makes xterm do a local selection (bypassing mouse reporting),
+  // then these paths move text in/out of the system clipboard.
+  async function clipWrite(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through to legacy path */ }
+    try { // http / older browsers: hidden textarea + execCommand
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+
+  async function clipRead() {
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        return await navigator.clipboard.readText();
+      }
+    } catch { /* permission denied or unavailable */ }
+    return null;
+  }
+
+  // Remember the last non-empty selection: invoking copy (button click, or a
+  // shortcut some browsers grab) can clear xterm's live selection before doCopy
+  // reads it, so capture the text the moment the selection is made.
+  let lastSelection = '';
+  term.onSelectionChange(() => { const s = term.getSelection(); if (s) lastSelection = s; });
+
+  // read the visible viewport as plain text (fallback when nothing is selected)
+  function readVisible() {
+    const buf = term.buffer && term.buffer.active;
+    if (!buf) return '';
+    const lines = [];
+    for (let i = 0; i < term.rows; i++) {
+      const line = buf.getLine(buf.viewportY + i);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n').replace(/\s+$/, '');
+  }
+
+  // copy the current selection, or the whole visible screen if nothing selected.
+  // Reports the character count so an empty/wrong copy is diagnosable at a glance.
+  async function doCopy() {
+    const sel = term.getSelection() || lastSelection;
+    const fromSel = !!sel;
+    const text = sel || readVisible();
+    const ok = await clipWrite(text);
+    flashNote(!ok ? '复制失败：剪贴板不可用'
+      : text ? `已复制${fromSel ? '选区' : '整屏'} ${text.length} 字`
+      : '没有可复制的内容（未选中且屏幕为空）');
+    lastSelection = ''; // consumed
+    term.focus();
+  }
+
+  async function doPaste() {
+    const text = await clipRead();
+    if (text == null) { flashNote('粘贴失败：浏览器拒绝读剪贴板'); return; }
+    if (text) send(text);
+    term.focus();
+  }
+
+  // No custom Ctrl+C/Ctrl+V handling: Ctrl+C stays the terminal interrupt and
+  // Ctrl+V stays native paste (which also lets the desktop image-paste `paste`
+  // event fire). Copy happens via OSC 52 (select-to-copy) or the ⎘ button;
+  // paste via native Ctrl+V or the ⇥ button.
+
+  // OSC 52 clipboard: TUIs (Claude Code, tmux, vim…) emit `ESC]52;c;<base64>` to
+  // set the system clipboard on select-to-copy. xterm.js drops this by default,
+  // so the app "sends 25 chars via OSC 52" but nothing reaches the clipboard.
+  // Bridge it to the real clipboard; ignore read requests (`?`) for privacy.
+  term.parser.registerOscHandler(52, (data) => {
+    const semi = data.indexOf(';');
+    const b64 = semi === -1 ? data : data.slice(semi + 1);
+    if (!b64 || b64 === '?') return true;
+    try {
+      const bin = atob(b64);
+      const text = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+      clipWrite(text).then((ok) => { if (ok) flashNote(`已复制 ${text.length} 字`); });
+    } catch { /* malformed payload: leave clipboard untouched */ }
+    return true; // handled either way
+  });
+
   // --- touch scrolling ---
   // tmux keeps history in its own scrollback (the terminal runs in the
   // alternate buffer, so the browser-side viewport has nothing to scroll).
@@ -517,6 +619,8 @@
   });
 
   // --- status bar buttons ---
+  document.getElementById('btn-copy').addEventListener('click', doCopy);
+  document.getElementById('btn-paste').addEventListener('click', doPaste);
   document.getElementById('btn-font-inc').addEventListener('click', () => setFont(fontSize + 1));
   document.getElementById('btn-font-dec').addEventListener('click', () => setFont(fontSize - 1));
   function setFont(px) {
@@ -527,16 +631,78 @@
     sendResize();
   }
 
-  document.getElementById('btn-session').addEventListener('click', () => {
-    const name = prompt('tmux 会话名（不存在会自动创建）：', sessionName);
-    if (!name) return;
-    sessionName = name.replace(/[^\w-]/g, '') || 'mobile';
-    localStorage.setItem('session', sessionName);
+  // --- session panel & per-tab MRU ---
+  const MRU_MAX = 8;
+  function getMru() {
+    try { const a = JSON.parse(sessionStorage.getItem('sessionMRU')); return Array.isArray(a) ? a : []; }
+    catch { return []; }
+  }
+  // Record the active session: this tab (sessionStorage) + its MRU queue, plus
+  // the global "last used" (localStorage) so future new tabs start from here.
+  function rememberSession(name) {
+    sessionStorage.setItem('session', name);
+    localStorage.setItem('session', name);
+    const mru = [name, ...getMru().filter((n) => n !== name)].slice(0, MRU_MAX);
+    sessionStorage.setItem('sessionMRU', JSON.stringify(mru));
+  }
+  function switchSession(name) {
+    const n = sanitizeName(name);
+    if (!n || n === sessionName) { closePanel(); return; }
+    sessionName = n;
+    rememberSession(n);
     if (transport) { const t = transport; transport = null; t.close(); }
     term.reset();
     connect();
-  });
+    closePanel();
+  }
 
+  const panel = document.getElementById('session-panel');
+  const panelList = document.getElementById('sp-list');
+  const panelMru = document.getElementById('sp-mru');
+  const panelInput = document.getElementById('sp-new');
+  function closePanel() { panel.hidden = true; }
+  async function openPanel() {
+    panel.hidden = false;
+    panelInput.value = '';
+    // MRU chips for this tab (skip the current session — it's already active)
+    panelMru.innerHTML = '';
+    for (const n of getMru().filter((x) => x !== sessionName)) {
+      const chip = document.createElement('button');
+      chip.className = 'sp-chip';
+      chip.textContent = n;
+      chip.addEventListener('click', () => switchSession(n));
+      panelMru.appendChild(chip);
+    }
+    panelMru.parentElement.hidden = panelMru.children.length === 0;
+    // live server sessions
+    panelList.innerHTML = '<div class="sp-empty">加载中…</div>';
+    let sessions = null;
+    try {
+      const r = await fetchT('/t/sessions', {}, 5000);
+      if (r.ok) sessions = (await r.json()).sessions;
+    } catch { /* fall through to error state */ }
+    if (!sessions) { panelList.innerHTML = '<div class="sp-empty">无法获取会话列表（可新建）</div>'; return; }
+    if (!sessions.length) { panelList.innerHTML = '<div class="sp-empty">暂无活跃会话（新建一个）</div>'; return; }
+    panelList.innerHTML = '';
+    for (const s of sessions) {
+      const row = document.createElement('button');
+      row.className = 'sp-row' + (s.name === sessionName ? ' current' : '');
+      const meta = `${s.windows} 窗口${s.attached ? ' · ●' : ''}`;
+      row.innerHTML = `<span class="sp-name"></span><span class="sp-meta"></span>`;
+      row.querySelector('.sp-name').textContent = s.name;
+      row.querySelector('.sp-meta').textContent = meta;
+      row.addEventListener('click', () => switchSession(s.name));
+      panelList.appendChild(row);
+    }
+  }
+
+  document.getElementById('btn-session').addEventListener('click', openPanel);
+  document.getElementById('sp-close').addEventListener('click', closePanel);
+  panel.addEventListener('click', (e) => { if (e.target === panel) closePanel(); });
+  document.getElementById('sp-create').addEventListener('click', () => switchSession(panelInput.value));
+  panelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') switchSession(panelInput.value); });
+
+  rememberSession(sessionName); // persist the resolved session for this tab
   applyViewport();
   connect();
 })();

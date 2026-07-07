@@ -19,6 +19,8 @@
       <span id="status" class="off">连接中…</span>
       <span id="session-name"></span>
       <span class="spacer"></span>
+      <button class="sbtn" id="btn-copy" title="复制选中文字（无选中则复制当前屏幕）">⎘</button>
+      <button class="sbtn" id="btn-paste" title="把剪贴板文字粘贴到终端">⇥</button>
       <button class="sbtn" id="btn-clip" title="发送剪贴板中的图片">📋</button>
       <button class="sbtn" id="btn-img" title="发送相册图片到终端">📷</button>
       <input type="file" id="img-input" accept="image/*" multiple hidden>
@@ -46,6 +48,27 @@
       <button data-seq="\x1b[6~" class="key wide">PgDn</button>
       <button data-seq="\x1b[H" class="key wide">Home</button>
       <button data-seq="\x1b[F" class="key wide">End</button>
+    </div>
+  </div>
+  <div id="session-panel" hidden>
+    <div class="sp-box">
+      <div class="sp-head">
+        <span>会话</span>
+        <button id="sp-close" class="sp-x" title="关闭">✕</button>
+      </div>
+      <div class="sp-section">
+        <div class="sp-label">服务器会话</div>
+        <div id="sp-list"></div>
+      </div>
+      <div class="sp-section" hidden>
+        <div class="sp-label">本标签最近</div>
+        <div id="sp-mru"></div>
+      </div>
+      <div class="sp-section sp-newrow">
+        <input id="sp-new" type="text" inputmode="text" autocomplete="off"
+               placeholder="新建 / 切换到会话名…" maxlength="32">
+        <button id="sp-create">进入</button>
+      </div>
     </div>
   </div>
   <script src="/vendor/xterm.js"></script>
