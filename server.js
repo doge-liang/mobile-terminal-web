@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 
@@ -110,7 +111,13 @@ function clampRows(v) { return Math.max(2, Math.min(300, parseInt(v, 10) || 24))
 function spawnTmux(session, cols, rows) {
   // "; set-option mouse on" runs after attach: wheel reports then scroll tmux's
   // own scrollback (copy-mode) — that's how touch scrolling reaches history
-  return pty.spawn('tmux', ['new-session', '-A', '-s', session, ';', 'set-option', 'mouse', 'on'], {
+  // set-clipboard on (not the default "external"): confirmed by isolated test to
+  // be what makes tmux forward an inner app's OSC 52 out to the outer terminal
+  // (xterm.js), where our OSC 52 handler writes it to the system clipboard.
+  // "external" does not forward here; "on" does (and also fills a tmux buffer).
+  return pty.spawn('tmux', ['new-session', '-A', '-s', session,
+    ';', 'set-option', 'mouse', 'on',
+    ';', 'set-option', '-g', 'set-clipboard', 'on'], {
     name: 'xterm-256color',
     cols,
     rows,
@@ -315,6 +322,24 @@ const requestHandler = async (req, res) => {
       const hasJwt = !!req.headers['cf-access-jwt-assertion'];
       console.log(`[403] ${req.method} ${url.pathname} host=${req.headers.host} cookie=${hasCookie} jwt=${hasJwt} reason=${auth.reason}`);
       return json(res, 403, { error: 'unauthorized', from: 'mobile-terminal-app' });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/t/sessions') {
+      // list live tmux sessions. Fixed argv (no shell, no user input) → no
+      // injection surface. "no server running" and any error → empty list, not
+      // a failure: zero sessions is a valid state the UI renders as "新建一个".
+      const fmt = '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}';
+      const sessions = await new Promise((resolve) => {
+        execFile('tmux', ['list-sessions', '-F', fmt], { timeout: 3000 }, (err, stdout) => {
+          if (err) return resolve([]);
+          const rows = stdout.split('\n').filter(Boolean).map((line) => {
+            const [name, windows, attached, activity] = line.split('\t');
+            return { name, windows: +windows || 0, attached: +attached || 0, activity: +activity || 0 };
+          });
+          resolve(rows);
+        });
+      });
+      return json(res, 200, { sessions });
     }
 
     if (req.method === 'POST' && url.pathname === '/t/metrics') {
