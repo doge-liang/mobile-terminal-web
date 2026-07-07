@@ -342,6 +342,20 @@ const requestHandler = async (req, res) => {
       return json(res, 200, { sessions });
     }
 
+    if (req.method === 'POST' && url.pathname === '/t/kill') {
+      let body = {};
+      try { body = JSON.parse(await readBody(req, 4096)); } catch { return json(res, 400, { error: 'bad json' }); }
+      // sanitize explicitly (not sanitizeSession, which would default to "mobile"
+      // on empty input and could kill the wrong session); require a real name.
+      const name = String(body.name || '').replace(/[^\w-]/g, '').slice(0, 32);
+      if (!name) return json(res, 400, { error: 'no name' });
+      const ok = await new Promise((resolve) => {
+        execFile('tmux', ['kill-session', '-t', name], { timeout: 3000 }, (err) => resolve(!err));
+      });
+      console.log(`[${new Date().toISOString()}] ${auth.email} killed tmux "${name}" (ok=${ok})`);
+      return json(res, ok ? 200 : 404, { ok });
+    }
+
     if (req.method === 'POST' && url.pathname === '/t/metrics') {
       let body = {};
       try { body = JSON.parse(await readBody(req, 64 * 1024)); } catch { return json(res, 400, { error: 'bad json' }); }

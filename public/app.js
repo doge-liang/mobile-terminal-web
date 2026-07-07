@@ -439,6 +439,76 @@
     return true; // handled either way
   });
 
+  // --- bell: audio + background title notification ---
+  // TUIs (Claude Code, shells) emit BEL (\x07) when work finishes; tmux forwards
+  // it (visual-bell off), xterm.js fires onBell. Play a short synthesized chime
+  // (no external asset) and, when the tab is backgrounded, flash the title as a
+  // silent fallback (mobile browsers often suspend audio in the background).
+  let bellOn = localStorage.getItem('bell') !== 'off'; // default on
+  const bellBtn = document.getElementById('btn-bell');
+  function renderBell() {
+    bellBtn.textContent = bellOn ? '🔔' : '🔕';
+    bellBtn.title = bellOn ? '完成提示音：开' : '完成提示音：关';
+  }
+  renderBell();
+
+  let audioCtx = null;
+  function unlockAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch { /* Web Audio unavailable */ }
+  }
+  // browsers block audio until a user gesture — unlock on the first interaction
+  window.addEventListener('pointerdown', unlockAudio, { once: true });
+  window.addEventListener('keydown', unlockAudio, { once: true });
+
+  function beep() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    for (const [dt, freq] of [[0, 880], [0.12, 1320]]) { // two-tone "ding-dong"
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + dt);
+      gain.gain.exponentialRampToValueAtTime(0.25, now + dt + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.18);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(now + dt);
+      osc.stop(now + dt + 0.2);
+    }
+  }
+
+  const baseTitle = document.title;
+  let titleFlashed = false;
+  function flashTitle() {
+    if (!document.hidden || titleFlashed) return;
+    document.title = '🔔 完成 · ' + baseTitle;
+    titleFlashed = true;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && titleFlashed) { document.title = baseTitle; titleFlashed = false; }
+  });
+
+  bellBtn.addEventListener('click', () => {
+    bellOn = !bellOn;
+    localStorage.setItem('bell', bellOn ? 'on' : 'off');
+    renderBell();
+    if (bellOn) { unlockAudio(); beep(); } // the click is a gesture: preview the sound
+  });
+
+  let lastBeep = 0;
+  term.onBell(() => {
+    flashTitle(); // silent fallback fires regardless of the sound toggle
+    if (!bellOn) return;
+    const t = Date.now();
+    if (t - lastBeep < 2000) return; // coalesce bursts to one chime per 2s
+    lastBeep = t;
+    unlockAudio();
+    beep();
+  });
+
   // --- touch scrolling ---
   // tmux keeps history in its own scrollback (the terminal runs in the
   // alternate buffer, so the browser-side viewport has nothing to scroll).
@@ -645,15 +715,48 @@
     const mru = [name, ...getMru().filter((n) => n !== name)].slice(0, MRU_MAX);
     sessionStorage.setItem('sessionMRU', JSON.stringify(mru));
   }
-  function switchSession(name) {
-    const n = sanitizeName(name);
-    if (!n || n === sessionName) { closePanel(); return; }
-    sessionName = n;
-    rememberSession(n);
+  // force a fresh (re)connect to a session — used by switch and by delete-current
+  // (where the target name may equal sessionName but the old tmux session is gone)
+  function connectSession(name) {
+    sessionName = sanitizeName(name) || 'mobile';
+    rememberSession(sessionName);
     if (transport) { const t = transport; transport = null; t.close(); }
     term.reset();
     connect();
     closePanel();
+  }
+  function switchSession(name) {
+    const n = sanitizeName(name);
+    if (!n || n === sessionName) { closePanel(); return; } // already here: no-op
+    connectSession(n);
+  }
+  async function deleteSession(name) {
+    if (!confirm(`删除会话 “${name}”？该会话内所有进程都会终止，不可恢复。`)) return;
+    let ok = false;
+    try {
+      const r = await fetchT('/t/kill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }, 5000);
+      ok = r.ok;
+    } catch { /* network error */ }
+    if (!ok) { flashNote('删除失败'); return; }
+    // drop from this tab's MRU
+    sessionStorage.setItem('sessionMRU', JSON.stringify(getMru().filter((n) => n !== name)));
+    if (name === sessionName) {
+      // deleting the session we're attached to: hop to another live one, else default
+      let next = 'mobile';
+      try {
+        const r = await fetchT('/t/sessions', {}, 5000);
+        if (r.ok) {
+          const others = (await r.json()).sessions.map((s) => s.name).filter((n) => n !== name);
+          if (others.length) next = others[0];
+        }
+      } catch { /* keep default */ }
+      connectSession(next);
+    } else {
+      openPanel(); // just refresh the list
+    }
   }
 
   const panel = document.getElementById('session-panel');
@@ -685,13 +788,20 @@
     if (!sessions.length) { panelList.innerHTML = '<div class="sp-empty">暂无活跃会话（新建一个）</div>'; return; }
     panelList.innerHTML = '';
     for (const s of sessions) {
-      const row = document.createElement('button');
+      const row = document.createElement('div');
       row.className = 'sp-row' + (s.name === sessionName ? ' current' : '');
-      const meta = `${s.windows} 窗口${s.attached ? ' · ●' : ''}`;
-      row.innerHTML = `<span class="sp-name"></span><span class="sp-meta"></span>`;
-      row.querySelector('.sp-name').textContent = s.name;
-      row.querySelector('.sp-meta').textContent = meta;
-      row.addEventListener('click', () => switchSession(s.name));
+      const pick = document.createElement('button');
+      pick.className = 'sp-pick';
+      pick.innerHTML = `<span class="sp-name"></span><span class="sp-meta"></span>`;
+      pick.querySelector('.sp-name').textContent = s.name;
+      pick.querySelector('.sp-meta').textContent = `${s.windows} 窗口${s.attached ? ' · ●' : ''}`;
+      pick.addEventListener('click', () => switchSession(s.name));
+      const del = document.createElement('button');
+      del.className = 'sp-del';
+      del.textContent = '✕';
+      del.title = '删除会话';
+      del.addEventListener('click', () => deleteSession(s.name));
+      row.append(pick, del);
       panelList.appendChild(row);
     }
   }
