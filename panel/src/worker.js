@@ -1,7 +1,7 @@
 // 自包含的节点面板 Worker：内嵌静态 HTML + KV 注册表 API。
 // 单文件便于经 Cloudflare API 直接上传（无需 wrangler 静态资源管线）。
 const TEAM_DOMAIN = "doge-liang.cloudflareaccess.com";
-const PANEL_AUD = ""; // 部署最后一步填 panel Access app 的 AUD
+const PANEL_AUD = "PLACEHOLDER_PANEL_AUD";
 const ZONE_SUFFIX = ".doge-liang-space.uk";
 
 const SEED = [
