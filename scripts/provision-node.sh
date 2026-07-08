@@ -30,7 +30,9 @@ ssh "$SSH_HOST" 'command -v cloudflared >/dev/null || { \
 
 echo "[4/6] 同步仓库(tar over ssh) + npm ci (编译 node-pty)"
 ssh "$SSH_HOST" "mkdir -p $DIR"
-tar -C "$LOCAL_REPO" --exclude=node_modules --exclude=.git -czf - . \
+# 排除 .auth-secret：那是每节点独立的 HMAC 签名密钥，绝不能把控制机（主 term 节点）
+# 的密钥拷到新节点，否则新节点被攻破即可伪造主节点的快速通道 cookie。新节点首启自生成。
+tar -C "$LOCAL_REPO" --exclude=node_modules --exclude=.git --exclude=.auth-secret -czf - . \
   | ssh "$SSH_HOST" "tar -C $DIR -xzf -"
 ssh "$SSH_HOST" "cd $DIR && npm ci --no-audit --no-fund"
 
