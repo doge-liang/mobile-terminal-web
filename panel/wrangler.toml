@@ -1,0 +1,16 @@
+# 面板 Worker 配置。
+# 说明：实际部署经 Cloudflare API（MCP）完成——本控制机 Node 版本低于 wrangler 4
+# 要求的 v22，且未做 wrangler 登录。此文件记录权威配置，Node 22 环境下
+# `wrangler deploy` 亦可直接用。页面 HTML 已内嵌进 worker.js，故无静态资源管线。
+name = "panel"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+workers_dev = false            # 关闭 workers.dev，杜绝绕过 Access 的直连
+
+[[kv_namespaces]]
+binding = "NODES"
+id = "07379a3fa6674955b05036986ef2848b"
+
+[[routes]]
+pattern = "panel.doge-liang-space.uk"
+custom_domain = true
