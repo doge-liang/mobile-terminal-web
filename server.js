@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
+const { safeBasename, uniqueName } = require('./lib/upload-paths');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -236,7 +237,7 @@ const readBody = (req, limit) => readBodyRaw(req, limit).then((b) => b.toString(
 // --- image uploads (browser clipboard/photos can't reach the server's clipboard;
 //     files are uploaded here and their path typed into the terminal instead) ---
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/root/uploads';
-const UPLOAD_MAX = 15 << 20;
+const UPLOAD_MAX = 100 << 20;
 const UPLOAD_KEEP_MS = 7 * 24 * 3600 * 1000;
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/svg+xml': 'svg' };
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -430,28 +431,37 @@ const requestHandler = async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/t/upload') {
       const mime = (req.headers['content-type'] || '').split(';')[0].trim();
-      const ext = IMG_EXT[mime];
-      if (!ext) {
-        console.log(`[upload] rejected: type "${mime}" from ${auth.email}`);
-        return json(res, 415, { error: `unsupported type: ${mime}` });
-      }
-      // reject oversize via Content-Length BEFORE reading — killing the socket
-      // mid-body surfaces as an opaque "network error" in browsers
+      // 超限先按 Content-Length 拒,中途断流在浏览器里表现为不透明的"网络错误"
       const declared = parseInt(req.headers['content-length'], 10) || 0;
       if (declared > UPLOAD_MAX) {
-        console.log(`[upload] rejected: ${Math.round(declared / 1048576)}MB > 15MB from ${auth.email}`);
-        return json(res, 413, { error: `too large: ${Math.round(declared / 1048576)}MB (max 15MB)` });
+        console.log(`[upload] rejected: ${Math.round(declared / 1048576)}MB > 100MB from ${auth.email}`);
+        return json(res, 413, { error: `文件太大: ${Math.round(declared / 1048576)}MB (上限 100MB)` });
       }
       let buf;
       try { buf = await readBodyRaw(req, UPLOAD_MAX); } catch {
-        console.log(`[upload] rejected: body exceeded 15MB mid-stream from ${auth.email}`);
-        return json(res, 413, { error: 'too large (max 15MB)' });
+        console.log(`[upload] rejected: body exceeded 100MB mid-stream from ${auth.email}`);
+        return json(res, 413, { error: '文件太大 (上限 100MB)' });
       }
       if (!buf.length) return json(res, 400, { error: 'empty body' });
-      const name = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
-      const dest = path.join(UPLOAD_DIR, name);
-      await fs.promises.writeFile(dest, buf);
-      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${name} (${buf.length} bytes)`);
+
+      const destDir = url.searchParams.get('dir') || UPLOAD_DIR;
+      let base = url.searchParams.get('name') ? safeBasename(url.searchParams.get('name')) : null;
+      if (!base) {
+        // 无可用客户端名:生成一个,识别得出的图片类型给对应扩展名,否则 .bin
+        const ext = IMG_EXT[mime] || 'bin';
+        base = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+      }
+
+      let final;
+      try {
+        final = uniqueName(base, (n) => fs.existsSync(path.join(destDir, n)));
+        await fs.promises.writeFile(path.join(destDir, final), buf);
+      } catch (e) {
+        console.log(`[upload] write failed dir="${destDir}": ${e.message}`);
+        return json(res, 400, { error: `无法写入目录: ${destDir}（不存在或无权限）` });
+      }
+      const dest = path.join(destDir, final);
+      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${dest} (${buf.length} bytes)`);
       return json(res, 200, { path: dest });
     }
 
