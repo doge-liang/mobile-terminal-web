@@ -888,7 +888,20 @@
       const meta = e.type === 'dir' ? '' : `<span class="sp-meta">${fmtSize(e.size)}</span>`;
       // icon 是静态 SVG 常量（可信）；文件名仍走 textContent，避免注入
       pick.innerHTML = `<span class="sp-name">${icon}<span class="fp-name"></span></span>${meta}`;
-      pick.querySelector('.fp-name').textContent = e.name;
+      // 长文件名:主干截断、扩展名钉住可见;全部 textContent,无注入面
+      const nameEl = pick.querySelector('.fp-name');
+      const dot = e.name.lastIndexOf('.');
+      const hasExt = dot > 0 && dot < e.name.length - 1; // 不拆 .bashrc 这类点开头文件
+      const stemEl = document.createElement('span');
+      stemEl.className = 'fn-stem';
+      stemEl.textContent = hasExt ? e.name.slice(0, dot) : e.name;
+      nameEl.appendChild(stemEl);
+      if (hasExt) {
+        const extEl = document.createElement('span');
+        extEl.className = 'fn-ext';
+        extEl.textContent = e.name.slice(dot);
+        nameEl.appendChild(extEl);
+      }
       const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
       if (e.type === 'dir') {
         pick.addEventListener('click', () => fpLoad(abs));
