@@ -236,17 +236,57 @@ html, body {
   cursor: pointer;
 }
 
+/* file panel: same top-anchored modal presentation as #session-panel */
 #file-panel {
-  position: fixed; inset: 0; z-index: 20;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex; align-items: flex-end; justify-content: center;
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: rgba(1, 4, 9, 0.6);
 }
 #file-panel[hidden] { display: none; }
-.fp-path { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+/* wider on desktop — a file browser benefits from width; phone keeps the 420px default */
+@media (min-width: 600px) {
+  #file-panel .sp-box { max-width: 720px; }
+}
+/* current path fills the head; LTR keeps the leading slash, ellipsis truncates the tail */
+.fp-path { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-row { display: flex; align-items: center; }
-/* file rows: inline SVG type marker + filename; icon stays fixed, name ellipsizes */
-.fp-row .sp-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* file rows: inline SVG type marker + filename; icon fixed, name fills and truncates */
+.fp-row .sp-name { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow: hidden; }
 .fp-row .sp-name svg { flex: none; }
-.fp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* file-panel text buttons carry a leading icon */
-#fp-up, #fp-upload { display: inline-flex; align-items: center; gap: 6px; }
+.fp-row .sp-meta { flex: none; }
+/* long filename: stem truncates with ellipsis, extension stays pinned & visible */
+.fp-name { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.fp-name .fn-stem { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-name .fn-ext { flex: none; white-space: nowrap; }
+/* file-panel text buttons: leading icon + boxed like the panel's other controls */
+#fp-up, #fp-upload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#fp-up:active, #fp-upload:active { background: var(--border); }
+#fp-upload { flex: 1; }
+
+/* themed scrollbars — match the dark terminal instead of the OS default.
+   #toolbar keeps its own hidden-scrollbar rules (higher specificity). */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3f4650; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
