@@ -631,26 +631,40 @@
     }
   }
 
+  // 通用上传:任意类型,不再编码。dir 可选(面板传当前浏览目录;终端原生入口省略 → 服务端默认 /root/uploads)。
+  // 返回服务端落地路径,失败返回 null(已 flashNote)。
+  async function uploadFile(file, dir) {
+    if (!file) return null;
+    if (file.size > 100 << 20) { flashNote(`文件太大（>100MB）: ${file.name || ''}`); return null; }
+    flashNote(`上传中… ${file.name || ''} (${Math.round(file.size / 1024)}KB)`, 120000);
+    const qs = new URLSearchParams();
+    if (dir) qs.set('dir', dir);
+    if (file.name) qs.set('name', file.name);
+    const suffix = qs.toString() ? `?${qs}` : '';
+    try {
+      const r = await fetchT(`/t/upload${suffix}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      }, 120000);
+      const m = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}（非应用响应，疑似被 Cloudflare 拦截）`, 6000);
+        return null;
+      }
+      return m.path;
+    } catch (e) {
+      flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
+      return null;
+    }
+  }
+
   async function uploadImage(orig) {
     if (!orig || !orig.type.startsWith('image/')) return;
     flashNote('处理图片中…', 30000);
-    const file = await shrinkImage(orig);
-    if (file.size > 15 << 20) { flashNote('图片太大（>15MB）且无法压缩，试试截图'); return; }
-    flashNote(`上传中… (${Math.round(file.size / 1024)}KB)`, 30000);
-    try {
-      const r = await fetchT('/t/upload', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 60000);
-      const m = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        // our own errors always carry {error}; anything else means an intermediary
-        // (e.g. Cloudflare WAF/Access on the CF entry) answered instead of the app
-        flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}（非应用响应，疑似被 Cloudflare 拦截）`, 6000);
-        return;
-      }
-      send(m.path + ' '); // type the path at the cursor; TUIs pick it up from the prompt
-      flashNote('已插入图片路径');
-    } catch (e) {
-      flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
-    }
+    const file = await shrinkImage(orig); // 返回 Blob（无 name)→ 服务端按 mime 生成名
+    const p = await uploadFile(file, null);
+    if (p) { send(p + ' '); flashNote('已插入图片路径'); }
     term.focus();
   }
 
@@ -659,6 +673,17 @@
   imgInput.addEventListener('change', () => {
     for (const f of imgInput.files) uploadImage(f);
     imgInput.value = '';
+  });
+
+  const fileInput = document.getElementById('file-input');
+  document.getElementById('btn-file').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    for (const f of fileInput.files) {
+      const p = await uploadFile(f, null);
+      if (p) send(p + ' '); // 把落地路径打进终端
+    }
+    fileInput.value = '';
+    term.focus();
   });
 
   // clipboard button: mobile long-press paste menus don't hand images to web
