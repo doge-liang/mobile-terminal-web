@@ -56,14 +56,24 @@ html, body {
 #session-name { color: #8b949e; }
 
 .sbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* min-height keeps icon buttons (16px svg) and text buttons (A-/A+) the same
+     box height so the status bar reads as one row */
+  min-height: 26px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--fg);
   font-size: 12px;
-  padding: 2px 10px;
+  padding: 4px 10px;
 }
 .sbtn:active { background: var(--border); }
+
+/* inline SVG icons inherit text color via currentColor; block removes the
+   inline-baseline gap so glyph and icon buttons keep the same box height */
+.icon { display: block; }
 
 #term {
   flex: 1;
@@ -182,12 +192,13 @@ html, body {
 .sp-meta { color: #8b949e; font-size: 12px; margin-left: 8px; white-space: nowrap; }
 .sp-del {
   flex: none;
+  display: flex;
+  align-items: center;
   padding: 0 14px;
   background: transparent;
   border: none;
   border-left: 1px solid var(--border);
   color: #8b949e;
-  font-size: 13px;
   cursor: pointer;
 }
 .sp-del:active { background: rgba(248, 81, 73, 0.15); color: #f85149; }

@@ -420,8 +420,8 @@
 
   // No custom Ctrl+C/Ctrl+V handling: Ctrl+C stays the terminal interrupt and
   // Ctrl+V stays native paste (which also lets the desktop image-paste `paste`
-  // event fire). Copy happens via OSC 52 (select-to-copy) or the ⎘ button;
-  // paste via native Ctrl+V or the ⇥ button.
+  // event fire). Copy happens via OSC 52 (select-to-copy) or the copy button;
+  // paste via native Ctrl+V or the paste button.
 
   // OSC 52 clipboard: TUIs (Claude Code, tmux, vim…) emit `ESC]52;c;<base64>` to
   // set the system clipboard on select-to-copy. xterm.js drops this by default,
@@ -446,8 +446,12 @@
   // silent fallback (mobile browsers often suspend audio in the background).
   let bellOn = localStorage.getItem('bell') !== 'off'; // default on
   const bellBtn = document.getElementById('btn-bell');
+  // inline SVG (Lucide bell / bell-off) so the toggle stays a real icon, not an
+  // emoji; the accessible name lives on the button's title (see renderBell)
+  const BELL_ON_SVG = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>';
+  const BELL_OFF_SVG = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.268 21a2 2 0 0 0 3.464 0M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742M2 2l20 20M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>';
   function renderBell() {
-    bellBtn.textContent = bellOn ? '🔔' : '🔕';
+    bellBtn.innerHTML = bellOn ? BELL_ON_SVG : BELL_OFF_SVG;
     bellBtn.title = bellOn ? '完成提示音：开' : '完成提示音：关';
   }
   renderBell();
@@ -664,7 +668,7 @@
   // clipboard button: mobile long-press paste menus don't hand images to web
   // pages, but the async Clipboard API can read them (user gesture required)
   document.getElementById('btn-clip').addEventListener('click', async () => {
-    if (!navigator.clipboard || !navigator.clipboard.read) return flashNote('浏览器不支持读剪贴板，请用 📷');
+    if (!navigator.clipboard || !navigator.clipboard.read) return flashNote('浏览器不支持读剪贴板，请用相册按钮');
     try {
       const items = await navigator.clipboard.read();
       let found = 0;
@@ -798,7 +802,7 @@
       pick.addEventListener('click', () => switchSession(s.name));
       const del = document.createElement('button');
       del.className = 'sp-del';
-      del.textContent = '✕';
+      del.innerHTML = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
       del.title = '删除会话';
       del.addEventListener('click', () => deleteSession(s.name));
       row.append(pick, del);

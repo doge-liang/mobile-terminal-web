@@ -115,8 +115,9 @@ const HTML = `<!DOCTYPE html>
   .card .note{color:#6e7681;font-size:11px}
   .open{background:var(--accent);color:#0d1117;border:none;border-radius:8px;padding:8px 14px;
     font:inherit;font-weight:600;text-decoration:none}
-  .del{background:transparent;border:1px solid var(--border);color:#8b949e;border-radius:8px;
-    padding:8px 10px;font:inherit}
+  .del{display:flex;align-items:center;background:transparent;border:1px solid var(--border);
+    color:#8b949e;border-radius:8px;padding:8px 10px;font:inherit}
+  .del svg{display:block}
   .del:active{color:#f85149;border-color:#f85149}
   form{display:flex;flex-direction:column;gap:8px;background:var(--bar);border:1px solid var(--border);
     border-radius:12px;padding:14px;margin-top:16px}
@@ -159,7 +160,9 @@ function render(nodes){
     open.href = n.url; open.target = "_blank"; open.rel = "noopener";
     card.append(meta, open);
     if (n.id !== "self"){
-      var del = document.createElement("button"); del.className = "del"; del.textContent = "✕";
+      var del = document.createElement("button"); del.className = "del";
+      del.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+      del.title = "删除节点";
       del.onclick = function(){
         if (!confirm("删除节点「" + n.name + "」？")) return;
         fetch("/api/nodes/" + n.id, { method: "DELETE" }).then(function(r){
