@@ -465,7 +465,7 @@ const requestHandler = async (req, res) => {
       return json(res, 200, { path: dest });
     }
 
-    if (req.method === 'GET' && url.pathname === '/t/dl') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/t/dl') {
       const p = url.searchParams.get('path');
       if (!p) return json(res, 400, { error: 'missing path' });
       let st;
@@ -482,6 +482,8 @@ const requestHandler = async (req, res) => {
         'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(base)}`,
         'Cache-Control': 'no-store',
       });
+      // HEAD: 客户端用它预检可下载性（成功才导航下载），只回头不回体
+      if (req.method === 'HEAD') return res.end();
       const stream = fs.createReadStream(p);
       stream.on('error', (e) => {
         console.error(`[${new Date().toISOString()}] download stream failed ${p}: ${e.message}`);

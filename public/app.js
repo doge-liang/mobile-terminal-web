@@ -884,8 +884,21 @@
       if (e.type === 'dir') {
         pick.addEventListener('click', () => fpLoad(abs));
       } else {
-        // 文件:导航到 /t/dl 触发系统下载
-        pick.addEventListener('click', () => { window.location.href = `/t/dl?path=${encodeURIComponent(abs)}`; });
+        // 文件:先 HEAD 预检,通过才导航下载——避免出错时把 App 跳到裸 JSON 错误页
+        pick.addEventListener('click', async () => {
+          const dlUrl = `/t/dl?path=${encodeURIComponent(abs)}`;
+          try {
+            const r = await fetchT(dlUrl, { method: 'HEAD' }, 8000);
+            if (!r.ok) {
+              flashNote(r.status === 404 ? '文件不存在' : r.status === 403 ? '无权限读取'
+                : r.status === 400 ? '无法下载（目录或符号链接）' : `下载失败: HTTP ${r.status}`);
+              return;
+            }
+            window.location.href = dlUrl; // 预检通过,触发系统下载
+          } catch {
+            flashNote('下载失败: 网络错误');
+          }
+        });
       }
       row.appendChild(pick);
       fpList.appendChild(row);
