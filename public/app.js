@@ -584,25 +584,40 @@
   });
 
   // --- toolbar keys ---
+  // Keys send bytes straight down the transport, so they never need terminal
+  // focus. On mobile the soft keyboard pops because the hidden xterm textarea
+  // holds focus (activeElement) even after the keyboard is dismissed, so any
+  // tap makes iOS re-present it. On pointerdown we:
+  //   1. preventDefault  → the button never steals focus (avoids the flicker
+  //      of losing focus and having it restored), and
+  //   2. on touch, blur the textarea → drop that latent focus before iOS can
+  //      re-present the keyboard for the tap. This unconditionally keeps the
+  //      keyboard from popping when a toolbar key is used; the trade-off is
+  //      that tapping a key mid-typing dismisses the keyboard (tap the terminal
+  //      to bring it back). On desktop (mouse) we keep focus so typing flows.
+  document.querySelectorAll('#toolbar .key').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (e.pointerType !== 'mouse' && term.textarea) term.textarea.blur();
+    });
+  });
+
   const ESCAPES = { '\\x1b': '\x1b', '\\t': '\t', '\\x03': '\x03', '\\x04': '\x04' };
   document.querySelectorAll('#toolbar .key[data-seq]').forEach((btn) => {
     btn.addEventListener('click', () => {
       // data-seq holds a JS-style escaped string; decode \xNN and \[ sequences
       const seq = btn.dataset.seq.replace(/\\x1b|\\t|\\x03|\\x04/g, (m) => ESCAPES[m]);
       send(transformInput(seq));
-      term.focus();
     });
   });
 
   ctrlBtn.addEventListener('click', () => {
     ctrlActive = !ctrlActive;
     ctrlBtn.classList.toggle('active', ctrlActive);
-    term.focus();
   });
   altBtn.addEventListener('click', () => {
     altActive = !altActive;
     altBtn.classList.toggle('active', altActive);
-    term.focus();
   });
 
   // --- image upload ---

@@ -613,10 +613,15 @@ const requestHandler = async (req, res) => {
     res.writeHead(404);
     return res.end('not found');
   }
+  // /vendor and /fonts are content-hashed-by-path immutables → cache hard.
+  // Everything else (app.js, index.html, manifest, icon) changes on every
+  // deploy and is tiny, so no-store: the browser must refetch, never serving a
+  // stale copy. Plain no-cache without a validator (no ETag/Last-Modified) let
+  // some mobile browsers keep an old app.js until the user cleared site data.
   const longCache = url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/fonts/');
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
-    'Cache-Control': longCache ? 'public, max-age=2592000' : 'no-cache',
+    'Cache-Control': longCache ? 'public, max-age=2592000' : 'no-store',
   });
   fs.createReadStream(filePath).pipe(res);
 };
