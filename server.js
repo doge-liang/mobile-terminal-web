@@ -487,6 +487,7 @@ const requestHandler = async (req, res) => {
         console.error(`[${new Date().toISOString()}] download stream failed ${p}: ${e.message}`);
         if (!res.writableEnded) res.destroy(e);
       });
+      res.on('close', () => stream.destroy());
       stream.pipe(res);
       console.log(`[${new Date().toISOString()}] ${auth.email} downloaded ${p} (${st.size} bytes)`);
       return;
