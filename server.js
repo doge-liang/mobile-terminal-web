@@ -483,7 +483,10 @@ const requestHandler = async (req, res) => {
         'Cache-Control': 'no-store',
       });
       const stream = fs.createReadStream(p);
-      stream.on('error', () => { if (!res.writableEnded) res.end(); });
+      stream.on('error', (e) => {
+        console.error(`[${new Date().toISOString()}] download stream failed ${p}: ${e.message}`);
+        if (!res.writableEnded) res.destroy(e);
+      });
       stream.pipe(res);
       console.log(`[${new Date().toISOString()}] ${auth.email} downloaded ${p} (${st.size} bytes)`);
       return;
