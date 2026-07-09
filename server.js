@@ -465,6 +465,30 @@ const requestHandler = async (req, res) => {
       return json(res, 200, { path: dest });
     }
 
+    if (req.method === 'GET' && url.pathname === '/t/dl') {
+      const p = url.searchParams.get('path');
+      if (!p) return json(res, 400, { error: 'missing path' });
+      let st;
+      try { st = await fs.promises.stat(p); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
+      if (st.isDirectory()) return json(res, 400, { error: '不能下载目录' });
+      const base = path.basename(p);
+      const type = MIME[path.extname(base).toLowerCase()] || 'application/octet-stream';
+      // RFC 5987:filename* 兜住中文/空格;ascii filename 作旧浏览器回退
+      const asciiName = base.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Content-Length': st.size,
+        'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(base)}`,
+        'Cache-Control': 'no-store',
+      });
+      const stream = fs.createReadStream(p);
+      stream.on('error', () => { if (!res.writableEnded) res.end(); });
+      stream.pipe(res);
+      console.log(`[${new Date().toISOString()}] ${auth.email} downloaded ${p} (${st.size} bytes)`);
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/t/open') {
       let body = {};
       try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
