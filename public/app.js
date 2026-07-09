@@ -790,6 +790,7 @@
   const panelInput = document.getElementById('sp-new');
   function closePanel() { panel.hidden = true; }
   async function openPanel() {
+    document.getElementById('file-panel').hidden = true;
     panel.hidden = false;
     panelInput.value = '';
     // MRU chips for this tab (skip the current session — it's already active)
@@ -861,9 +862,10 @@
     try {
       const r = await fetchT(url, {}, 8000);
       data = await r.json().catch(() => ({}));
-      if (!r.ok) { fpList.innerHTML = `<div class="sp-empty">${data.error || `HTTP ${r.status}`}</div>`; return; }
+      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return; }
     } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return; }
 
+    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return; }
     fpCwd = data.path;
     fpPath.textContent = data.path;
     fpPath.dataset.parent = data.parent;
@@ -876,7 +878,8 @@
       pick.className = 'sp-pick';
       const icon = e.type === 'dir' ? '📁' : e.type === 'symlink' ? '🔗' : '📄';
       const meta = e.type === 'dir' ? '' : `<span class="sp-meta">${fmtSize(e.size)}</span>`;
-      pick.innerHTML = `<span class="sp-name">${icon} ${e.name}</span>${meta}`;
+      pick.innerHTML = `<span class="sp-name"></span>${meta}`;
+      pick.querySelector('.sp-name').textContent = `${icon} ${e.name}`;
       const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
       if (e.type === 'dir') {
         pick.addEventListener('click', () => fpLoad(abs));
@@ -889,7 +892,7 @@
     }
   }
 
-  document.getElementById('btn-files').addEventListener('click', () => { filePanel.hidden = false; fpLoad(null); });
+  document.getElementById('btn-files').addEventListener('click', () => { document.getElementById('session-panel').hidden = true; filePanel.hidden = false; fpLoad(null); });
   document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
   filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
   document.getElementById('fp-up').addEventListener('click', () => { const par = fpPath.dataset.parent; if (par) fpLoad(par); });
