@@ -635,26 +635,40 @@
     }
   }
 
+  // 通用上传:任意类型,不再编码。dir 可选(面板传当前浏览目录;终端原生入口省略 → 服务端默认 /root/uploads)。
+  // 返回服务端落地路径,失败返回 null(已 flashNote)。
+  async function uploadFile(file, dir) {
+    if (!file) return null;
+    if (file.size > 100 << 20) { flashNote(`文件太大（>100MB）: ${file.name || ''}`); return null; }
+    flashNote(`上传中… ${file.name || ''} (${Math.round(file.size / 1024)}KB)`, 120000);
+    const qs = new URLSearchParams();
+    if (dir) qs.set('dir', dir);
+    if (file.name) qs.set('name', file.name);
+    const suffix = qs.toString() ? `?${qs}` : '';
+    try {
+      const r = await fetchT(`/t/upload${suffix}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      }, 120000);
+      const m = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}（非应用响应，疑似被 Cloudflare 拦截）`, 6000);
+        return null;
+      }
+      return m.path;
+    } catch (e) {
+      flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
+      return null;
+    }
+  }
+
   async function uploadImage(orig) {
     if (!orig || !orig.type.startsWith('image/')) return;
     flashNote('处理图片中…', 30000);
-    const file = await shrinkImage(orig);
-    if (file.size > 15 << 20) { flashNote('图片太大（>15MB）且无法压缩，试试截图'); return; }
-    flashNote(`上传中… (${Math.round(file.size / 1024)}KB)`, 30000);
-    try {
-      const r = await fetchT('/t/upload', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }, 60000);
-      const m = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        // our own errors always carry {error}; anything else means an intermediary
-        // (e.g. Cloudflare WAF/Access on the CF entry) answered instead of the app
-        flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}（非应用响应，疑似被 Cloudflare 拦截）`, 6000);
-        return;
-      }
-      send(m.path + ' '); // type the path at the cursor; TUIs pick it up from the prompt
-      flashNote('已插入图片路径');
-    } catch (e) {
-      flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
-    }
+    const file = await shrinkImage(orig); // 返回 Blob（无 name)→ 服务端按 mime 生成名
+    const p = await uploadFile(file, null);
+    if (p) { send(p + ' '); flashNote('已插入图片路径'); }
     term.focus();
   }
 
@@ -663,6 +677,17 @@
   imgInput.addEventListener('change', () => {
     for (const f of imgInput.files) uploadImage(f);
     imgInput.value = '';
+  });
+
+  const fileInput = document.getElementById('file-input');
+  document.getElementById('btn-file').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    for (const f of fileInput.files) {
+      const p = await uploadFile(f, null);
+      if (p) send(p + ' '); // 把落地路径打进终端
+    }
+    fileInput.value = '';
+    term.focus();
   });
 
   // clipboard button: mobile long-press paste menus don't hand images to web
@@ -769,6 +794,7 @@
   const panelInput = document.getElementById('sp-new');
   function closePanel() { panel.hidden = true; }
   async function openPanel() {
+    document.getElementById('file-panel').hidden = true;
     panel.hidden = false;
     panelInput.value = '';
     // MRU chips for this tab (skip the current session — it's already active)
@@ -819,4 +845,83 @@
   rememberSession(sessionName); // persist the resolved session for this tab
   applyViewport();
   connect();
+
+  // --- 文件浏览器面板 ---
+  const filePanel = document.getElementById('file-panel');
+  const fpPath = document.getElementById('fp-path');
+  const fpList = document.getElementById('fp-list');
+  const fpInput = document.getElementById('fp-input');
+  let fpCwd = null; // 当前浏览目录（绝对路径)
+
+  function fmtSize(n) {
+    if (n < 1024) return `${n}B`;
+    if (n < 1048576) return `${Math.round(n / 1024)}K`;
+    return `${(n / 1048576).toFixed(1)}M`;
+  }
+
+  // 文件行类型图标（静态 SVG 常量，Lucide folder/link/file）——列表标记不用 emoji
+  const FP_ICON_DIR = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+  const FP_ICON_LINK = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+  const FP_ICON_FILE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>';
+  async function fpLoad(dir) {
+    fpList.innerHTML = '<div class="sp-empty">加载中…</div>';
+    const url = dir ? `/t/ls?path=${encodeURIComponent(dir)}` : '/t/ls';
+    let data;
+    try {
+      const r = await fetchT(url, {}, 8000);
+      data = await r.json().catch(() => ({}));
+      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return; }
+    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return; }
+
+    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return; }
+    fpCwd = data.path;
+    fpPath.textContent = data.path;
+    fpPath.dataset.parent = data.parent;
+    fpList.innerHTML = '';
+    if (!data.entries.length) { fpList.innerHTML = '<div class="sp-empty">（空目录）</div>'; }
+    for (const e of data.entries) {
+      const row = document.createElement('div');
+      row.className = 'sp-row fp-row';
+      const pick = document.createElement('button');
+      pick.className = 'sp-pick';
+      const icon = e.type === 'dir' ? FP_ICON_DIR : e.type === 'symlink' ? FP_ICON_LINK : FP_ICON_FILE;
+      const meta = e.type === 'dir' ? '' : `<span class="sp-meta">${fmtSize(e.size)}</span>`;
+      // icon 是静态 SVG 常量（可信）；文件名仍走 textContent，避免注入
+      pick.innerHTML = `<span class="sp-name">${icon}<span class="fp-name"></span></span>${meta}`;
+      pick.querySelector('.fp-name').textContent = e.name;
+      const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
+      if (e.type === 'dir') {
+        pick.addEventListener('click', () => fpLoad(abs));
+      } else {
+        // 文件:先 HEAD 预检,通过才导航下载——避免出错时把 App 跳到裸 JSON 错误页
+        pick.addEventListener('click', async () => {
+          const dlUrl = `/t/dl?path=${encodeURIComponent(abs)}`;
+          try {
+            const r = await fetchT(dlUrl, { method: 'HEAD' }, 8000);
+            if (!r.ok) {
+              flashNote(r.status === 404 ? '文件不存在' : r.status === 403 ? '无权限读取'
+                : r.status === 400 ? '无法下载（目录或符号链接）' : `下载失败: HTTP ${r.status}`);
+              return;
+            }
+            window.location.href = dlUrl; // 预检通过,触发系统下载
+          } catch {
+            flashNote('下载失败: 网络错误');
+          }
+        });
+      }
+      row.appendChild(pick);
+      fpList.appendChild(row);
+    }
+  }
+
+  document.getElementById('btn-files').addEventListener('click', () => { document.getElementById('session-panel').hidden = true; filePanel.hidden = false; fpLoad(null); });
+  document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
+  filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
+  document.getElementById('fp-up').addEventListener('click', () => { const par = fpPath.dataset.parent; if (par) fpLoad(par); });
+  document.getElementById('fp-upload').addEventListener('click', () => fpInput.click());
+  fpInput.addEventListener('change', async () => {
+    for (const f of fpInput.files) await uploadFile(f, fpCwd); // 落到当前浏览目录
+    fpInput.value = '';
+    fpLoad(fpCwd); // 刷新
+  });
 })();
