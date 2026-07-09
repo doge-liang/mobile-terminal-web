@@ -97,6 +97,24 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now tmux-boot.service
+
+cat > /etc/profile.d/term-dl.sh <<'DLEOF'
+# dl <文件>…：为移动端终端打印可点下载链接
+dl() {
+  local host
+  host=$(sed -n 's/^MAIN_HOST=//p' /etc/default/mobile-terminal 2>/dev/null)
+  host=${host:-term.doge-liang-space.uk}
+  if [ "$#" -eq 0 ]; then echo "用法: dl <文件> [更多文件…]" >&2; return 2; fi
+  local f abs enc
+  for f in "$@"; do
+    abs=$(realpath -- "$f" 2>/dev/null) || { echo "dl: 找不到 $f" >&2; continue; }
+    if [ ! -f "$abs" ]; then echo "dl: 不是普通文件 $abs" >&2; continue; fi
+    enc=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$abs")
+    echo "https://${host}/t/dl?path=${enc}"
+  done
+}
+DLEOF
+chmod 0644 /etc/profile.d/term-dl.sh
 REMOTE
 
 echo "[7/7] 装 token 化 cloudflared 服务"
