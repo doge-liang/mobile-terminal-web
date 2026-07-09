@@ -492,6 +492,27 @@ const requestHandler = async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/t/ls') {
+      const p = url.searchParams.get('path') || process.env.HOME || '/root';
+      let dirents;
+      try { dirents = await fs.promises.readdir(p, { withFileTypes: true }); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限' : '目录不存在' }); }
+      const entries = [];
+      for (const d of dirents) {
+        const type = d.isDirectory() ? 'dir' : d.isSymbolicLink() ? 'symlink' : 'file';
+        let size = 0, mtime = 0;
+        try { const s = await fs.promises.lstat(path.join(p, d.name)); size = s.size; mtime = s.mtimeMs; }
+        catch { /* 单条 stat 失败:保留条目,不整体失败 */ }
+        entries.push({ name: d.name, type, size, mtime });
+      }
+      // 目录优先,其后按名称
+      entries.sort((a, b) => (a.type === 'dir') === (b.type === 'dir')
+        ? (a.name < b.name ? -1 : 1)
+        : (a.type === 'dir' ? -1 : 1));
+      const parent = path.dirname(p) === p ? p : path.dirname(p); // 根 / 的 parent 为自身
+      return json(res, 200, { path: p, parent, entries });
+    }
+
     if (req.method === 'POST' && url.pathname === '/t/open') {
       let body = {};
       try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
