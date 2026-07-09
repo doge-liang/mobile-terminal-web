@@ -29,6 +29,7 @@
       <button class="sbtn" id="btn-font-dec" title="缩小字体">A-</button>
       <button class="sbtn" id="btn-font-inc" title="放大字体">A+</button>
       <button class="sbtn" id="btn-bell" title="完成提示音">🔔</button>
+      <button class="sbtn" id="btn-files" title="文件浏览器">📁</button>
       <button class="sbtn" id="btn-session" title="切换 tmux 会话">⇄</button>
     </div>
     <div id="term"></div>
@@ -71,6 +72,22 @@
         <input id="sp-new" type="text" inputmode="text" autocomplete="off"
                placeholder="新建 / 切换到会话名…" maxlength="32">
         <button id="sp-create">进入</button>
+      </div>
+    </div>
+  </div>
+  <div id="file-panel" hidden>
+    <div class="sp-box">
+      <div class="sp-head">
+        <span id="fp-path" class="fp-path">~</span>
+        <button id="fp-close" class="sp-x" title="关闭">✕</button>
+      </div>
+      <div class="sp-section sp-newrow">
+        <button id="fp-up">⬆ 上级</button>
+        <button id="fp-upload">⬆ 上传到此目录</button>
+        <input type="file" id="fp-input" multiple hidden>
+      </div>
+      <div class="sp-section">
+        <div id="fp-list"></div>
       </div>
     </div>
   </div>

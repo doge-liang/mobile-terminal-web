@@ -840,4 +840,63 @@
   rememberSession(sessionName); // persist the resolved session for this tab
   applyViewport();
   connect();
+
+  // --- 文件浏览器面板 ---
+  const filePanel = document.getElementById('file-panel');
+  const fpPath = document.getElementById('fp-path');
+  const fpList = document.getElementById('fp-list');
+  const fpInput = document.getElementById('fp-input');
+  let fpCwd = null; // 当前浏览目录（绝对路径)
+
+  function fmtSize(n) {
+    if (n < 1024) return `${n}B`;
+    if (n < 1048576) return `${Math.round(n / 1024)}K`;
+    return `${(n / 1048576).toFixed(1)}M`;
+  }
+
+  async function fpLoad(dir) {
+    fpList.innerHTML = '<div class="sp-empty">加载中…</div>';
+    const url = dir ? `/t/ls?path=${encodeURIComponent(dir)}` : '/t/ls';
+    let data;
+    try {
+      const r = await fetchT(url, {}, 8000);
+      data = await r.json().catch(() => ({}));
+      if (!r.ok) { fpList.innerHTML = `<div class="sp-empty">${data.error || `HTTP ${r.status}`}</div>`; return; }
+    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return; }
+
+    fpCwd = data.path;
+    fpPath.textContent = data.path;
+    fpPath.dataset.parent = data.parent;
+    fpList.innerHTML = '';
+    if (!data.entries.length) { fpList.innerHTML = '<div class="sp-empty">（空目录）</div>'; }
+    for (const e of data.entries) {
+      const row = document.createElement('div');
+      row.className = 'sp-row fp-row';
+      const pick = document.createElement('button');
+      pick.className = 'sp-pick';
+      const icon = e.type === 'dir' ? '📁' : e.type === 'symlink' ? '🔗' : '📄';
+      const meta = e.type === 'dir' ? '' : `<span class="sp-meta">${fmtSize(e.size)}</span>`;
+      pick.innerHTML = `<span class="sp-name">${icon} ${e.name}</span>${meta}`;
+      const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
+      if (e.type === 'dir') {
+        pick.addEventListener('click', () => fpLoad(abs));
+      } else {
+        // 文件:导航到 /t/dl 触发系统下载
+        pick.addEventListener('click', () => { window.location.href = `/t/dl?path=${encodeURIComponent(abs)}`; });
+      }
+      row.appendChild(pick);
+      fpList.appendChild(row);
+    }
+  }
+
+  document.getElementById('btn-files').addEventListener('click', () => { filePanel.hidden = false; fpLoad(null); });
+  document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
+  filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
+  document.getElementById('fp-up').addEventListener('click', () => { const par = fpPath.dataset.parent; if (par) fpLoad(par); });
+  document.getElementById('fp-upload').addEventListener('click', () => fpInput.click());
+  fpInput.addEventListener('change', async () => {
+    for (const f of fpInput.files) await uploadFile(f, fpCwd); // 落到当前浏览目录
+    fpInput.value = '';
+    fpLoad(fpCwd); // 刷新
+  });
 })();
