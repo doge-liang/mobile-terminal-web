@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
+const { safeBasename, uniqueName } = require('./lib/upload-paths');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -236,7 +237,7 @@ const readBody = (req, limit) => readBodyRaw(req, limit).then((b) => b.toString(
 // --- image uploads (browser clipboard/photos can't reach the server's clipboard;
 //     files are uploaded here and their path typed into the terminal instead) ---
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/root/uploads';
-const UPLOAD_MAX = 15 << 20;
+const UPLOAD_MAX = 100 << 20;
 const UPLOAD_KEEP_MS = 7 * 24 * 3600 * 1000;
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/svg+xml': 'svg' };
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -430,29 +431,89 @@ const requestHandler = async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/t/upload') {
       const mime = (req.headers['content-type'] || '').split(';')[0].trim();
-      const ext = IMG_EXT[mime];
-      if (!ext) {
-        console.log(`[upload] rejected: type "${mime}" from ${auth.email}`);
-        return json(res, 415, { error: `unsupported type: ${mime}` });
-      }
-      // reject oversize via Content-Length BEFORE reading — killing the socket
-      // mid-body surfaces as an opaque "network error" in browsers
+      // 超限先按 Content-Length 拒,中途断流在浏览器里表现为不透明的"网络错误"
       const declared = parseInt(req.headers['content-length'], 10) || 0;
       if (declared > UPLOAD_MAX) {
-        console.log(`[upload] rejected: ${Math.round(declared / 1048576)}MB > 15MB from ${auth.email}`);
-        return json(res, 413, { error: `too large: ${Math.round(declared / 1048576)}MB (max 15MB)` });
+        console.log(`[upload] rejected: ${Math.round(declared / 1048576)}MB > 100MB from ${auth.email}`);
+        return json(res, 413, { error: `文件太大: ${Math.round(declared / 1048576)}MB (上限 100MB)` });
       }
       let buf;
       try { buf = await readBodyRaw(req, UPLOAD_MAX); } catch {
-        console.log(`[upload] rejected: body exceeded 15MB mid-stream from ${auth.email}`);
-        return json(res, 413, { error: 'too large (max 15MB)' });
+        console.log(`[upload] rejected: body exceeded 100MB mid-stream from ${auth.email}`);
+        return json(res, 413, { error: '文件太大 (上限 100MB)' });
       }
       if (!buf.length) return json(res, 400, { error: 'empty body' });
-      const name = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
-      const dest = path.join(UPLOAD_DIR, name);
-      await fs.promises.writeFile(dest, buf);
-      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${name} (${buf.length} bytes)`);
+
+      const destDir = url.searchParams.get('dir') || UPLOAD_DIR;
+      let base = url.searchParams.get('name') ? safeBasename(url.searchParams.get('name')) : null;
+      if (!base) {
+        // 无可用客户端名:生成一个,识别得出的图片类型给对应扩展名,否则 .bin
+        const ext = IMG_EXT[mime] || 'bin';
+        base = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+      }
+
+      let final;
+      try {
+        final = uniqueName(base, (n) => fs.existsSync(path.join(destDir, n)));
+        await fs.promises.writeFile(path.join(destDir, final), buf);
+      } catch (e) {
+        console.log(`[upload] write failed dir="${destDir}": ${e.message}`);
+        return json(res, 400, { error: `无法写入目录: ${destDir}（不存在或无权限）` });
+      }
+      const dest = path.join(destDir, final);
+      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${dest} (${buf.length} bytes)`);
       return json(res, 200, { path: dest });
+    }
+
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/t/dl') {
+      const p = url.searchParams.get('path');
+      if (!p) return json(res, 400, { error: 'missing path' });
+      let st;
+      try { st = await fs.promises.stat(p); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
+      if (st.isDirectory()) return json(res, 400, { error: '不能下载目录' });
+      const base = path.basename(p);
+      const type = MIME[path.extname(base).toLowerCase()] || 'application/octet-stream';
+      // RFC 5987:filename* 兜住中文/空格;ascii filename 作旧浏览器回退
+      const asciiName = base.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Content-Length': st.size,
+        'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(base)}`,
+        'Cache-Control': 'no-store',
+      });
+      // HEAD: 客户端用它预检可下载性（成功才导航下载），只回头不回体
+      if (req.method === 'HEAD') return res.end();
+      const stream = fs.createReadStream(p);
+      stream.on('error', (e) => {
+        console.error(`[${new Date().toISOString()}] download stream failed ${p}: ${e.message}`);
+        if (!res.writableEnded) res.destroy(e);
+      });
+      res.on('close', () => stream.destroy());
+      stream.pipe(res);
+      console.log(`[${new Date().toISOString()}] ${auth.email} downloaded ${p} (${st.size} bytes)`);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/t/ls') {
+      const p = url.searchParams.get('path') || process.env.HOME || '/root';
+      let dirents;
+      try { dirents = await fs.promises.readdir(p, { withFileTypes: true }); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限' : '目录不存在' }); }
+      const entries = [];
+      for (const d of dirents) {
+        const type = d.isDirectory() ? 'dir' : d.isSymbolicLink() ? 'symlink' : 'file';
+        let size = 0, mtime = 0;
+        try { const s = await fs.promises.lstat(path.join(p, d.name)); size = s.size; mtime = s.mtimeMs; }
+        catch { /* 单条 stat 失败:保留条目,不整体失败 */ }
+        entries.push({ name: d.name, type, size, mtime });
+      }
+      // 目录优先,其后按名称
+      entries.sort((a, b) => (a.type === 'dir') === (b.type === 'dir')
+        ? (a.name < b.name ? -1 : 1)
+        : (a.type === 'dir' ? -1 : 1));
+      const parent = path.dirname(p) === p ? p : path.dirname(p); // 根 / 的 parent 为自身
+      return json(res, 200, { path: p, parent, entries });
     }
 
     if (req.method === 'POST' && url.pathname === '/t/open') {
