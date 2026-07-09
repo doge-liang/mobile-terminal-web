@@ -40,9 +40,14 @@ html, body {
   padding-top: env(safe-area-inset-top);
 }
 
+/* touch layout (default): the status bar is two rows tall. The connection
+   status stacks its two lines on the left; the ten buttons form a 5x2 grid on
+   the right, so both sides read as two aligned rows and nothing overflows the
+   viewport. The desktop (fine-pointer) override below collapses this back to a
+   single scrollable row. */
 #statusbar {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
   padding: 4px 10px;
   background: var(--bar);
@@ -50,10 +55,35 @@ html, body {
   font-size: 12px;
   flex: none;
 }
-#statusbar .spacer { flex: 1; }
+/* left side takes the leftover width and absorbs status-text changes on its
+   own: the latency number ("… 199ms") appears once speed-test finishes and
+   then keeps updating, so the status must flex/ellipsize here rather than push
+   the button grid. tabular-nums stops the digits from reflowing as rtt drifts. */
+#sb-status {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+#sb-status span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#status { font-variant-numeric: tabular-nums; }
 #status.on  { color: #3fb950; }
 #status.off { color: #f85149; }
 #session-name { color: #8b949e; }
+
+/* ten buttons as five columns, two rows; grid keeps each column's two buttons
+   the same width so the rows line up. flex:none keeps this cluster at its
+   natural size — it must NOT shrink when the status text on the left grows,
+   which was collapsing/garbling the grid until a refresh. */
+#sb-actions {
+  display: grid;
+  grid-template-columns: repeat(5, auto);
+  gap: 6px;
+  flex: none;
+}
+.sbtn { flex: none; }
 
 .sbtn {
   display: inline-flex;
@@ -74,6 +104,31 @@ html, body {
 /* inline SVG icons inherit text color via currentColor; block removes the
    inline-baseline gap so glyph and icon buttons keep the same box height */
 .icon { display: block; }
+
+/* desktop: the mobile-tuned status bar reads too cramped with a pointer, so
+   roughly double the bar height, button box, and icon glyphs (SVG width/height
+   attrs are set in the markup; CSS width/height override those presentation
+   attributes). Keyed on a fine pointer (mouse), NOT min-width — wide Android
+   phones report >=600px CSS px and would otherwise get the enlarged buttons,
+   overflowing the non-scrolling status bar. Touch screens keep the compact defaults. */
+@media (hover: hover) and (pointer: fine) {
+  #statusbar { align-items: center; padding: 8px 16px; gap: 12px; font-size: 15px; }
+  /* collapse the two-row touch layout back to a single row */
+  #sb-status { flex-direction: row; align-items: center; gap: 12px; }
+  #sb-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #sb-actions::-webkit-scrollbar { display: none; }
+  .sbtn { min-height: 44px; padding: 8px 16px; font-size: 15px; border-radius: 8px; }
+  .sbtn .icon { width: 26px; height: 26px; }
+}
 
 #term {
   flex: 1;
@@ -282,11 +337,13 @@ html, body {
 #fp-up:active, #fp-upload:active { background: var(--border); }
 #fp-upload { flex: 1; }
 
-/* themed scrollbars — match the dark terminal instead of the OS default.
-   #toolbar keeps its own hidden-scrollbar rules (higher specificity). */
-* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #3f4650; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-corner { background: transparent; }
+/* themed scrollbars — scoped to the panel scroll areas only.
+   A global `*` rule forced an 8px space-consuming bar onto the xterm viewport,
+   whose fit was computed against the mobile 0-width overlay bar, so the bar
+   overlapped the last column. #term is left to the browser default (overlay). */
+.sp-section { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.sp-section::-webkit-scrollbar { width: 8px; height: 8px; }
+.sp-section::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.sp-section::-webkit-scrollbar-thumb:hover { background: #3f4650; }
+.sp-section::-webkit-scrollbar-track { background: transparent; }
+.sp-section::-webkit-scrollbar-corner { background: transparent; }
