@@ -650,11 +650,69 @@
     }
   }
 
+  // 部署所在网络的代理层把单次请求体卡在 1MB,超过就在浏览器里表现为不透明的
+  // "网络错误"。大文件按 512KB 切片顺序上传,服务端拼接。CHUNK_SIZE 必须与
+  // server.js 保持一致。
+  const CHUNK_SIZE = 512 * 1024;
+
+  function randomId() {
+    const a = new Uint8Array(8);                 // 16 位 hex,落在服务端 [a-f0-9]{8,64}
+    crypto.getRandomValues(a);
+    return [...a].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // 顺序分片上传。成功返回服务端落地 path,失败 flashNote 并返回 null。
+  // offset 由客户端推进;若服务端回 409(乱序/重发),据 expected 校正后继续。
+  async function uploadChunked(file, dir) {
+    const id = randomId();
+    const total = file.size;
+    const N = Math.max(1, Math.ceil(total / CHUNK_SIZE));
+    const base = new URLSearchParams({ id, total: String(total) });
+    if (dir) base.set('dir', dir);
+    if (file.name) base.set('name', file.name);
+
+    let offset = 0;
+    let fails = 0;
+    while (offset < total) {
+      const end = Math.min(offset + CHUNK_SIZE, total);
+      const isFinal = end >= total;
+      const idx = Math.floor(offset / CHUNK_SIZE) + 1;
+      flashNote(`上传中… ${file.name || ''} (${idx}/${N})`, 120000);
+      const qs = new URLSearchParams(base);
+      qs.set('offset', String(offset));
+      if (isFinal) qs.set('final', '1');
+      try {
+        const r = await fetchT(`/t/upload-chunk?${qs}`, {
+          method: 'POST',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file.slice(offset, end),
+        }, 60000);
+        const m = await r.json().catch(() => ({}));
+        if (r.status === 409 && typeof m.expected === 'number') {
+          offset = m.expected; fails = 0; continue;      // 据服务端已有大小校正
+        }
+        if (!r.ok) {
+          if (++fails <= 2) continue;                    // 同片最多重试 2 次
+          flashNote(m.error ? `上传失败: ${m.error}` : `上传失败: HTTP ${r.status}`, 6000);
+          return null;
+        }
+        if (isFinal) return m.path || null;
+        offset = end; fails = 0;
+      } catch (e) {
+        if (++fails <= 2) continue;
+        flashNote(e.name === 'AbortError' ? '上传超时，网络太慢' : '上传失败: 网络错误');
+        return null;
+      }
+    }
+    return null;                                          // 正常不会到这(末片已 return)
+  }
+
   // 通用上传:任意类型,不再编码。dir 可选(面板传当前浏览目录;终端原生入口省略 → 服务端默认 /root/uploads)。
   // 返回服务端落地路径,失败返回 null(已 flashNote)。
   async function uploadFile(file, dir) {
     if (!file) return null;
     if (file.size > 100 << 20) { flashNote(`文件太大（>100MB）: ${file.name || ''}`); return null; }
+    if (file.size > CHUNK_SIZE) return uploadChunked(file, dir);   // 超单请求上限走分片
     flashNote(`上传中… ${file.name || ''} (${Math.round(file.size / 1024)}KB)`, 120000);
     const qs = new URLSearchParams();
     if (dir) qs.set('dir', dir);
