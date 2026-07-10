@@ -1,0 +1,10 @@
+# 部署节点清单模板 —— 复制为 scripts/nodes 并按你的机器填写（真实清单不进仓库）。
+# 每行一个节点，空格分隔三列；# 开头为注释。
+#
+#   <host>   ssh 别名（需在 ~/.ssh/config 配好免密），或 local 表示运行 deploy.sh 的本机
+#   <path>   该节点上仓库/部署目录的绝对路径
+#   <port>   server.js 监听端口（健康检查用）
+#
+# host              path                       port
+local               /root/mobile-terminal-web  7681
+# my-second-node    /root/mobile-terminal-web  7681
