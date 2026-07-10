@@ -126,8 +126,8 @@ html, body {
     scrollbar-width: none;
   }
   #sb-actions::-webkit-scrollbar { display: none; }
-  .sbtn { min-height: 44px; padding: 8px 16px; font-size: 15px; border-radius: 8px; }
-  .sbtn .icon { width: 26px; height: 26px; }
+  .sbtn { min-height: 34px; padding: 6px 10px; font-size: 15px; border-radius: 8px; }
+  .sbtn .icon { width: 19px; height: 19px; }
 }
 
 #term {
