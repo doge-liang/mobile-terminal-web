@@ -239,7 +239,7 @@ const readBody = (req, limit) => readBodyRaw(req, limit).then((b) => b.toString(
 //     files are uploaded here and their path typed into the terminal instead) ---
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/root/uploads';
 const UPLOAD_MAX = 100 << 20;
-const CHUNK_SIZE = 512 * 1024;                 // 必须与 public/app.js 一致
+const CHUNK_SIZE = 64 * 1024;                  // 客户端代理请求体上限以下;须 ≥ public/app.js 的分片大小
 const PARTS_DIR = path.join(UPLOAD_DIR, '.parts');
 const UPLOAD_KEEP_MS = 7 * 24 * 3600 * 1000;
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/svg+xml': 'svg' };
