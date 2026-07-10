@@ -4,7 +4,8 @@
   "description": "Mobile-first web terminal: xterm.js + node-pty + tmux, published via Cloudflare Tunnel + Access",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "license": "MIT",
   "dependencies": {
