@@ -197,6 +197,7 @@ html, body {
   overflow: hidden;
 }
 .sp-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -269,7 +270,10 @@ html, body {
   cursor: pointer;
 }
 .sp-chip:active { background: var(--border); }
-.sp-newrow { display: flex; gap: 8px; border-top: 1px solid var(--border); }
+/* flex:none so a long file/session list can't shrink this control row — the
+   column-flex parent (.sp-box, capped max-height) would otherwise compress it,
+   squashing the buttons/input vertically. Only the list sections scroll. */
+.sp-newrow { flex: none; display: flex; gap: 8px; border-top: 1px solid var(--border); overflow: visible; }
 #sp-new {
   flex: 1;
   padding: 9px 12px;
