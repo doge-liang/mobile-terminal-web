@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 对齐生产运行时(node 20)。测试只用 node: 内置 + 纯 lib/*.js，
+      # 不需要 npm ci（node-pty 等原生依赖与测试无关，跳过可避免构建波动）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 语法闸:server.js 与前端脚本括号/语法错误在这里就挡住。
+      - name: Syntax check
+        run: |
+          node --check server.js
+          node --check public/app.js
+          node --check lib/chunk-upload.js
+          node --check lib/upload-paths.js
+
+      - name: Run tests
+        run: npm test
