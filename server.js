@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
+const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -238,14 +239,24 @@ const readBody = (req, limit) => readBodyRaw(req, limit).then((b) => b.toString(
 //     files are uploaded here and their path typed into the terminal instead) ---
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/root/uploads';
 const UPLOAD_MAX = 100 << 20;
+const CHUNK_SIZE = 512 * 1024;                 // 必须与 public/app.js 一致
+const PARTS_DIR = path.join(UPLOAD_DIR, '.parts');
 const UPLOAD_KEEP_MS = 7 * 24 * 3600 * 1000;
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/svg+xml': 'svg' };
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(PARTS_DIR, { recursive: true });
 setInterval(() => {
   fs.readdir(UPLOAD_DIR, (err, files) => {
     if (err) return;
     for (const f of files) {
       const p = path.join(UPLOAD_DIR, f);
+      fs.stat(p, (e, st) => { if (!e && Date.now() - st.mtimeMs > UPLOAD_KEEP_MS) fs.unlink(p, () => {}); });
+    }
+  });
+  fs.readdir(PARTS_DIR, (err, files) => {
+    if (err) return;
+    for (const f of files) {
+      const p = path.join(PARTS_DIR, f);
       fs.stat(p, (e, st) => { if (!e && Date.now() - st.mtimeMs > UPLOAD_KEEP_MS) fs.unlink(p, () => {}); });
     }
   });
@@ -445,16 +456,16 @@ const requestHandler = async (req, res) => {
       if (!buf.length) return json(res, 400, { error: 'empty body' });
 
       const destDir = url.searchParams.get('dir') || UPLOAD_DIR;
-      let base = url.searchParams.get('name') ? safeBasename(url.searchParams.get('name')) : null;
-      if (!base) {
-        // 无可用客户端名:生成一个,识别得出的图片类型给对应扩展名,否则 .bin
-        const ext = IMG_EXT[mime] || 'bin';
-        base = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
-      }
+      const ext = IMG_EXT[mime] || 'bin';
+      const generatedBase = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
 
       let final;
       try {
-        final = uniqueName(base, (n) => fs.existsSync(path.join(destDir, n)));
+        final = finalName({
+          name: url.searchParams.get('name'),
+          generatedBase,
+          taken: (n) => fs.existsSync(path.join(destDir, n)),
+        });
         await fs.promises.writeFile(path.join(destDir, final), buf);
       } catch (e) {
         console.log(`[upload] write failed dir="${destDir}": ${e.message}`);
@@ -462,6 +473,76 @@ const requestHandler = async (req, res) => {
       }
       const dest = path.join(destDir, final);
       console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${dest} (${buf.length} bytes)`);
+      return json(res, 200, { path: dest });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/t/upload-chunk') {
+      const id = url.searchParams.get('id') || '';
+      if (!isValidUploadId(id)) return json(res, 400, { error: 'bad upload id' });
+      const total = parseInt(url.searchParams.get('total'), 10) || 0;
+      const offset = parseInt(url.searchParams.get('offset'), 10);
+      if (total <= 0 || !(offset >= 0)) return json(res, 400, { error: 'bad total/offset' });
+      if (total > UPLOAD_MAX) {
+        console.log(`[upload-chunk] rejected: ${Math.round(total / 1048576)}MB > 100MB from ${auth.email}`);
+        return json(res, 413, { error: `文件太大: ${Math.round(total / 1048576)}MB (上限 100MB)` });
+      }
+
+      const partPath = path.join(PARTS_DIR, `${id}.part`);
+      let have = 0;
+      try { have = (await fs.promises.stat(partPath)).size; } catch { have = 0; }
+
+      // 先读本片(限 CHUNK_SIZE + 余量;中途超限即 413)
+      let buf;
+      try { buf = await readBodyRaw(req, CHUNK_SIZE + 4096); } catch {
+        return json(res, 413, { error: '分片过大' });
+      }
+      if (!buf.length) return json(res, 400, { error: 'empty chunk' });
+
+      const final = url.searchParams.get('final') === '1';
+      const plan = planChunk({ have, offset, chunkLen: buf.length, total, final });
+      if (plan.action === 'conflict') return json(res, 409, { error: 'chunk out of order', expected: plan.expected });
+      if (plan.action === 'exceeds' || plan.action === 'corrupt') {
+        fs.promises.unlink(partPath).catch(() => {});
+        return json(res, 400, { error: '分片数据损坏(长度不符)' });
+      }
+
+      try {
+        await fs.promises.appendFile(partPath, buf);
+      } catch (e) {
+        console.log(`[upload-chunk] append failed: ${e.message}`);
+        return json(res, 500, { error: '写入分片失败' });
+      }
+
+      if (plan.action === 'continue') return json(res, 200, { ok: true, received: plan.received });
+
+      // finalize:定名并把 .part 挪到目标目录(跨盘时回退 copy+unlink)
+      const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+      const destDir = url.searchParams.get('dir') || UPLOAD_DIR;
+      const ext = IMG_EXT[mime] || 'bin';
+      const generatedBase = `paste-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+      let name;
+      try {
+        name = finalName({
+          name: url.searchParams.get('name'),
+          generatedBase,
+          taken: (n) => fs.existsSync(path.join(destDir, n)),
+        });
+        const destPath = path.join(destDir, name);
+        try {
+          await fs.promises.rename(partPath, destPath);
+        } catch (e) {
+          if (e.code === 'EXDEV') {                        // 临时文件与目标不同挂载点
+            await fs.promises.copyFile(partPath, destPath);
+            await fs.promises.unlink(partPath);
+          } else { throw e; }
+        }
+      } catch (e) {
+        fs.promises.unlink(partPath).catch(() => {});
+        console.log(`[upload-chunk] finalize failed dir="${destDir}": ${e.message}`);
+        return json(res, 400, { error: `无法写入目录: ${destDir}（不存在或无权限）` });
+      }
+      const dest = path.join(destDir, name);
+      console.log(`[${new Date().toISOString()}] ${auth.email} uploaded ${dest} (${total} bytes, chunked)`);
       return json(res, 200, { path: dest });
     }
 
