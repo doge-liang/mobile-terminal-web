@@ -55,47 +55,84 @@ on_node() { local host="$1"; shift
 
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
+# 节点健康：服务 active + 端口有响应(未鉴权应答 401/403，非 000)。返回 0=健康。
+node_healthy() { local host="$1" port="$2" a c
+  a=$(on_node "$host" "systemctl is-active $SERVICE" || true)
+  c=$(on_node "$host" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/ || true")
+  [ "$a" = active ] && [ -n "$c" ] && [ "$c" != 000 ]
+}
+
+# 回滚到同步前快照：还原白名单文件 → 重启 → 复检。仅对真正同步过文件的节点有意义
+# （local 的源是 git 工作区，回滚交给 git，不在这里动）。
+rollback() { local host="$1" path="$2" port="$3"
+  echo "  ↩ 回滚到上一版…"
+  if ! on_node "$host" "cd $path && [ -f .deploy-prev.tgz ] && tar xzf .deploy-prev.tgz && systemctl restart $SERVICE"; then
+    echo "  ✗ 回滚执行失败，需人工介入"; return 1
+  fi
+  sleep 1.5
+  if node_healthy "$host" "$port"; then echo "  ✓ 已回滚并恢复"; return 0; fi
+  echo "  ✗ 回滚后仍异常，需人工介入"; return 1
+}
+
 fails=()
 while read -r host path port _rest; do
   [ -z "${host:-}" ] && continue
   case "$host" in \#*) continue ;; esac
   echo "── $host  ($path :$port) ──"
 
-  # 1) 同步白名单（local 的工作区就是源，免同步；除非 path 不是本仓库）
+  # 1) 同步白名单。同步前先给目标现状打快照(.deploy-prev.tgz)，供失败回滚。
+  #    local 工作区即源，免同步（回滚交给 git）。
+  synced=0
   if [ "$host" = local ] && [ "$path" = "$REPO" ]; then
-    echo "  local：工作区即源，跳过同步"
+    echo "  local：工作区即源，跳过同步（回滚交给 git）"
   else
     dest="$path/"; [ "$host" = local ] || dest="$host:$path/"
     src=(); for f in "${WHITELIST[@]}"; do src+=("$REPO/$f"); done
+    [ -z "$DRYRUN" ] && on_node "$host" "cd $path && tar czf .deploy-prev.tgz --ignore-failed-read ${WHITELIST[*]} 2>/dev/null" || true
     rsync -az $DRYRUN "${src[@]}" "$dest"
+    synced=1
     echo "  同步完成${DRYRUN:+（dry-run，未改动）}"
   fi
   [ -n "$DRYRUN" ] && { echo "  dry-run：跳过校验/重启/自检"; continue; }
 
-  # 2) 重启前校验：语法 + 关键 require 能解析（避免把崩溃的代码重启上线）
+  # 2) 重启前校验：语法 + 关键 require 能解析（避免把崩溃的代码重启上线）。
+  #    已同步则失败即回滚文件（此时尚未重启，服务仍在旧代码上）。
   if ! on_node "$host" "cd $path && node --check server.js && node -e 'require(\"./lib/chunk-upload\")'" ; then
-    echo "  ✗ 校验失败，跳过该节点（未重启）"; fails+=("$host:validate"); continue
+    echo "  ✗ 校验失败（未重启）"
+    [ "$synced" = 1 ] && { rollback "$host" "$path" "$port" || true; fails+=("$host:validate(已回滚)"); } || fails+=("$host:validate")
+    continue
   fi
 
   # 3) 依赖变更时才装（默认不动 node_modules）
   if [ "$DEPS" = 1 ]; then
-    echo "  npm ci …"; on_node "$host" "cd $path && npm ci --omit=dev" || { echo "  ✗ npm ci 失败"; fails+=("$host:deps"); continue; }
+    echo "  npm ci …"
+    if ! on_node "$host" "cd $path && npm ci --omit=dev"; then
+      echo "  ✗ npm ci 失败"
+      [ "$synced" = 1 ] && { rollback "$host" "$path" "$port" || true; fails+=("$host:deps(已回滚)"); } || fails+=("$host:deps")
+      continue
+    fi
   fi
 
   # 4) 重启
   on_node "$host" "systemctl restart $SERVICE"
   sleep 1.5
 
-  # 5) 健康检查：服务 active + 端口有响应(未鉴权应答 401/403，非 000) + server.js 字节与本地一致
+  # 5) 健康检查：服务 active + 端口有响应 + server.js 字节与本地一致
   ok=1
-  active=$(on_node "$host" "systemctl is-active $SERVICE" || true)
-  [ "$active" = active ] || { echo "  ✗ 服务未 active（$active）"; ok=0; }
-  code=$(on_node "$host" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/ || true")
-  case "$code" in 000|"") echo "  ✗ 端口无响应（进程未起？）"; ok=0 ;; *) echo "  ✓ 端口有响应（HTTP $code）" ;; esac
+  node_healthy "$host" "$port" && echo "  ✓ 服务 active、端口有响应" || { echo "  ✗ 服务未起/端口无响应"; ok=0; }
   want=$(sha "$REPO/server.js"); got=$(on_node "$host" "sha256sum $path/server.js | awk '{print \$1}'" || true)
   [ "$want" = "$got" ] && echo "  ✓ server.js 字节一致" || { echo "  ✗ server.js 与本地不一致（want ${want:0:12} got ${got:0:12}）"; ok=0; }
 
-  if [ "$ok" = 1 ]; then echo "  ✓ $host 健康"; else fails+=("$host:health"); fi
+  if [ "$ok" = 1 ]; then
+    echo "  ✓ $host 健康"
+  elif [ "$synced" = 1 ]; then
+    # 新代码已重启上线但不健康 → 回滚到上一版
+    rollback "$host" "$path" "$port" || true
+    fails+=("$host:health(已回滚)")
+  else
+    echo "  ✗ local 健康检查失败：本机是源，请检查工作区并用 git 手动修复"
+    fails+=("$host:health")
+  fi
 done < "$NODES_FILE"
 
 echo "────────"

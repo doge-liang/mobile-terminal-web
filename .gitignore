@@ -4,3 +4,4 @@ node_modules/
 .auth-secret
 metrics/
 scripts/nodes
+.deploy-prev.tgz
