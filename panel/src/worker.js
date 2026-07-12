@@ -3,17 +3,23 @@
 const TEAM_DOMAIN = "doge-liang.cloudflareaccess.com";
 const PANEL_AUD = "79125b678de38d04d50e85f5704e809e62b23ab24bddde0b26c7f567bf1197de";
 const ZONE_SUFFIX = ".doge-liang-space.uk";
+// 快速通道：DNS 直指跳板机（搬瓦工 CN2-GIA）+ WireGuard 端到端加密，绕开晚高峰会卡的
+// CF 边缘 → racknerd 直连路径。目前仅本机（self）具备此栈，故只有本机节点带 fastUrl。
+const FAST_SELF_URL = "https://term-fast.doge-liang-space.uk:2096";
 
 const SEED = [
-  { id: "self", name: "本机", url: "https://term.doge-liang-space.uk", note: "racknerd-7d0b8fb", addedAt: 0 },
+  { id: "self", name: "本机", url: "https://term.doge-liang-space.uk", fastUrl: FAST_SELF_URL, note: "racknerd-7d0b8fb", addedAt: 0 },
   { id: "term2", name: "RackNerd-8G", url: "https://term2.doge-liang-space.uk", note: "racknerd-13d12ee", addedAt: 0 },
 ];
 
 async function loadNodes(env) {
   const raw = await env.NODES.get("nodes");
-  if (raw) return JSON.parse(raw);
-  await env.NODES.put("nodes", JSON.stringify(SEED));
-  return SEED;
+  if (!raw) { await env.NODES.put("nodes", JSON.stringify(SEED)); return SEED; }
+  const nodes = JSON.parse(raw);
+  // 老数据回填：给 self 补上快速通道地址（内存态，下次写 KV 时自然落地，纯 GET 不额外写）。
+  const self = nodes.find(n => n.id === "self");
+  if (self && !self.fastUrl) self.fastUrl = FAST_SELF_URL;
+  return nodes;
 }
 const saveNodes = (env, nodes) => env.NODES.put("nodes", JSON.stringify(nodes));
 const json = (obj, status = 200) =>
@@ -115,6 +121,11 @@ const HTML = `<!DOCTYPE html>
   .card .note{color:#6e7681;font-size:11px}
   .open{background:var(--accent);color:#0d1117;border:none;border-radius:8px;padding:8px 14px;
     font:inherit;font-weight:600;text-decoration:none}
+  .fast{display:flex;align-items:center;gap:5px;background:#3fb950;color:#0d1117;border:none;
+    border-radius:8px;padding:8px 12px;font:inherit;font-weight:600;text-decoration:none;white-space:nowrap}
+  .fast svg{display:block}
+  /* 有快速通道时，直连「打开」降为次要样式，把视觉重心让给「高速」 */
+  .open.sec{background:transparent;color:#8b949e;border:1px solid var(--border);padding:8px 12px}
   .del{display:flex;align-items:center;background:transparent;border:1px solid var(--border);
     color:#8b949e;border-radius:8px;padding:8px 10px;font:inherit}
   .del svg{display:block}
@@ -156,9 +167,19 @@ function render(nodes){
     var hs = document.createElement("div"); hs.className = "host"; hs.textContent = host(n.url);
     var nt = document.createElement("div"); nt.className = "note"; nt.textContent = n.note || "";
     meta.append(nm, hs, nt);
-    var open = document.createElement("a"); open.className = "open"; open.textContent = "打开";
+    var open = document.createElement("a"); open.textContent = "打开";
     open.href = n.url; open.target = "_blank"; open.rel = "noopener";
-    card.append(meta, open);
+    if (n.fastUrl){
+      // 快速通道跳转：闪电图标 + 文字，绿色主按钮；直连「打开」退居次要
+      var fast = document.createElement("a"); fast.className = "fast";
+      fast.href = n.fastUrl; fast.target = "_blank"; fast.rel = "noopener";
+      fast.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg><span>高速</span>';
+      open.className = "open sec";
+      card.append(meta, fast, open);
+    } else {
+      open.className = "open";
+      card.append(meta, open);
+    }
     if (n.id !== "self"){
       var del = document.createElement("button"); del.className = "del";
       del.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
