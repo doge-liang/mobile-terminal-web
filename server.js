@@ -283,6 +283,7 @@ const MIME = {
   '.png': 'image/png',
   '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
 };
 const VENDOR = {
   '/vendor/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
@@ -290,6 +291,7 @@ const VENDOR = {
   '/vendor/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
   '/vendor/addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
   '/vendor/addon-unicode11.js': 'node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js',
+  '/vendor/markdown-it.min.js': 'node_modules/markdown-it/dist/markdown-it.min.js',
 };
 
 const requestHandler = async (req, res) => {
