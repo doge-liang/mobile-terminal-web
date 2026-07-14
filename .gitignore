@@ -5,3 +5,4 @@ node_modules/
 metrics/
 scripts/nodes
 .deploy-prev.tgz
+docs/superpowers/
