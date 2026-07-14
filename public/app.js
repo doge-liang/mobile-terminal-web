@@ -930,8 +930,9 @@
   const pvBody = document.getElementById('pv-body');
   const pvDownload = document.getElementById('pv-download');
   const pvClose = document.getElementById('pv-close');
-  // html:false —— 文档内嵌原始 HTML 被转义而非执行,挡掉 <script> 注入
-  const md = window.markdownit({ html: false, linkify: true, breaks: false });
+  // html:false —— 文档内嵌原始 HTML 被转义而非执行,挡掉 <script> 注入。
+  // 容错:markdown-it 若未加载(如 vendor 未同步),降级为纯文本预览,绝不因此让文件浏览器初始化中断。
+  const md = window.markdownit ? window.markdownit({ html: false, linkify: true, breaks: false }) : null;
 
   function fmtSize(n) {
     if (n < 1024) return `${n}B`;
@@ -968,11 +969,12 @@
       data = await r.json().catch(() => ({}));
     } catch { flashNote('打开失败: 网络错误'); return; }
     if (!r.ok) { flashNote(data.error || `打开失败: HTTP ${r.status}`); return; }
-    if (data.type === 'markdown') {
+    if (data.type === 'markdown' && md) {
       pvBody.className = 'pv-body pv-md';
       pvBody.innerHTML = md.render(data.text || ''); // html:false 已挡注入
       showPreview(name, abs);
-    } else if (data.type === 'text') {
+    } else if (data.type === 'text' || data.type === 'markdown') {
+      // text,或 markdown 但库未加载:只读等宽展示原文
       pvBody.className = 'pv-body pv-text';
       pvBody.innerHTML = '';
       const pre = document.createElement('pre');
