@@ -46,8 +46,8 @@ async function verifyAccessJwt(req) {
 // itself requires a valid Access JWT — the email whitelist in Cloudflare Access
 // therefore remains the single gate for both domains.
 // ---------------------------------------------------------------------------
-const FAST_HOST = process.env.FAST_HOST || '';                                  // e.g. term-fast.doge-liang-space.uk
-const MAIN_HOST = process.env.MAIN_HOST || 'term.doge-liang-space.uk';          // Access-protected domain
+const FAST_HOST = process.env.FAST_HOST || '';                                  // e.g. term-fast.example.com
+const MAIN_HOST = process.env.MAIN_HOST || 'term.example.com';                  // Access-protected domain (set via env)
 const COOKIE_NAME = 'mtw_auth';
 const COOKIE_TTL_S = 30 * 24 * 3600;
 const PAIR_TTL_S = 60;

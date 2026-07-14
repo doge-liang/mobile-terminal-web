@@ -1,36 +1,42 @@
 // 自包含的节点面板 Worker：内嵌静态 HTML + KV 注册表 API。
 // 单文件便于经 Cloudflare API 直接上传（无需 wrangler 静态资源管线）。
-const TEAM_DOMAIN = "doge-liang.cloudflareaccess.com";
-const PANEL_AUD = "PLACEHOLDER_PANEL_AUD";
-const ZONE_SUFFIX = ".doge-liang-space.uk";
+//
+// 账号相关配置全部从 env 读（在 wrangler.toml [vars] 或 Cloudflare 面板设置）：
+//   TEAM_DOMAIN  Cloudflare Access 团队域，如 your-team.cloudflareaccess.com
+//   PANEL_AUD    本面板 Access 应用的 AUD Tag（留空则暂放行，便于联调）
+//   ZONE_SUFFIX  允许的节点域名后缀，如 .example.com（留空则只校验 https）
+//   SEED_NODES   可选：初始节点表 JSON；留空则首启为空，用面板 UI 添加
+function cfgFrom(env) {
+  return {
+    teamDomain: env.TEAM_DOMAIN || "",
+    panelAud: env.PANEL_AUD || "",
+    zoneSuffix: env.ZONE_SUFFIX || "",
+    seed: env.SEED_NODES ? JSON.parse(env.SEED_NODES) : [],
+  };
+}
 
-const SEED = [
-  { id: "self", name: "本机", url: "https://term.doge-liang-space.uk", note: "node-a", addedAt: 0 },
-  { id: "term2", name: "RackNerd-8G", url: "https://term2.doge-liang-space.uk", note: "node-b", addedAt: 0 },
-];
-
-async function loadNodes(env) {
+async function loadNodes(env, cfg) {
   const raw = await env.NODES.get("nodes");
   if (raw) return JSON.parse(raw);
-  await env.NODES.put("nodes", JSON.stringify(SEED));
-  return SEED;
+  await env.NODES.put("nodes", JSON.stringify(cfg.seed));
+  return cfg.seed;
 }
 const saveNodes = (env, nodes) => env.NODES.put("nodes", JSON.stringify(nodes));
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
-// 只允许 https 且属本 zone 的域名，防乱填
-function validUrl(u) {
+// 只允许 https（配了 zoneSuffix 时还须属本 zone），防乱填
+function validUrl(u, zoneSuffix) {
   try { const x = new URL(u);
-    return x.protocol === "https:" && x.hostname.endsWith(ZONE_SUFFIX); }
+    return x.protocol === "https:" && (!zoneSuffix || x.hostname.endsWith(zoneSuffix)); }
   catch { return false; }
 }
 
 // --- Access JWT 验签（纵深防御；主闸是 workers_dev=false + 自定义域挂 Access） ---
 let JWKS = null;
-async function getJwks() {
+async function getJwks(teamDomain) {
   if (JWKS) return JWKS;
-  const r = await fetch("https://" + TEAM_DOMAIN + "/cdn-cgi/access/certs");
+  const r = await fetch("https://" + teamDomain + "/cdn-cgi/access/certs");
   JWKS = (await r.json()).keys;
   return JWKS;
 }
@@ -38,8 +44,8 @@ function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "=";
   return Uint8Array.from(atob(s), c => c.charCodeAt(0));
 }
-async function verifyAccess(request) {
-  if (!PANEL_AUD) return true; // 填 AUD 之前先放行，便于联调
+async function verifyAccess(request, cfg) {
+  if (!cfg.panelAud) return true; // 填 AUD 之前先放行，便于联调
   const tok = request.headers.get("Cf-Access-Jwt-Assertion");
   if (!tok) return false;
   const parts = tok.split(".");
@@ -48,10 +54,10 @@ async function verifyAccess(request) {
   let payload;
   try { payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(p))); } catch { return false; }
   const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!auds.includes(PANEL_AUD)) return false;
+  if (!auds.includes(cfg.panelAud)) return false;
   if (payload.exp && Date.now() / 1000 > payload.exp) return false;
   const kid = JSON.parse(new TextDecoder().decode(b64urlToBytes(h))).kid;
-  const jwk = (await getJwks()).find(k => k.kid === kid);
+  const jwk = (await getJwks(cfg.teamDomain)).find(k => k.kid === kid);
   if (!jwk) return false;
   const key = await crypto.subtle.importKey("jwk", jwk,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
@@ -63,12 +69,13 @@ const newId = () => crypto.randomUUID().slice(0, 8);
 
 export default {
   async fetch(request, env) {
+    const cfg = cfgFrom(env);
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
-      if (!(await verifyAccess(request))) return json({ error: "forbidden" }, 403);
+      if (!(await verifyAccess(request, cfg))) return json({ error: "forbidden" }, 403);
     }
     if (url.pathname === "/api/nodes" && request.method === "GET") {
-      return json({ nodes: await loadNodes(env) });
+      return json({ nodes: await loadNodes(env, cfg) });
     }
     if (url.pathname === "/api/nodes" && request.method === "POST") {
       let body; try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
@@ -76,8 +83,8 @@ export default {
       const nodeUrl = String(body.url || "").trim();
       const note = String(body.note || "").trim().slice(0, 60);
       if (!name) return json({ error: "name required" }, 400);
-      if (!validUrl(nodeUrl)) return json({ error: "url must be https and under " + ZONE_SUFFIX }, 400);
-      const nodes = await loadNodes(env);
+      if (!validUrl(nodeUrl, cfg.zoneSuffix)) return json({ error: "url must be https" + (cfg.zoneSuffix ? " and under " + cfg.zoneSuffix : "") }, 400);
+      const nodes = await loadNodes(env, cfg);
       nodes.push({ id: newId(), name, url: nodeUrl, note, addedAt: Date.now() });
       await saveNodes(env, nodes);
       return json({ nodes });
@@ -86,7 +93,7 @@ export default {
     if (del && request.method === "DELETE") {
       const id = del[1];
       if (id === "self") return json({ error: "cannot delete self" }, 400);
-      const nodes = (await loadNodes(env)).filter(n => n.id !== id);
+      const nodes = (await loadNodes(env, cfg)).filter(n => n.id !== id);
       await saveNodes(env, nodes);
       return json({ nodes });
     }
@@ -136,7 +143,7 @@ const HTML = `<!DOCTYPE html>
 <div id="list"></div>
 <form id="add">
   <input id="f-name" placeholder="名称，如 RackNerd-8G" maxlength="40" autocomplete="off">
-  <input id="f-url" placeholder="https://termN.doge-liang-space.uk" inputmode="url" autocomplete="off">
+  <input id="f-url" placeholder="https://term.example.com" inputmode="url" autocomplete="off">
   <input id="f-note" placeholder="备注（可选）" maxlength="60" autocomplete="off">
   <button class="add" type="submit">添加节点</button>
 </form>

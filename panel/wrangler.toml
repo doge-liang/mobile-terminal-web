@@ -1,16 +1,25 @@
-# 面板 Worker 配置。
-# 说明：实际部署经 Cloudflare API（MCP）完成——本控制机 Node 版本低于 wrangler 4
-# 要求的 v22，且未做 wrangler 登录。此文件记录权威配置，Node 22 环境下
-# `wrangler deploy` 亦可直接用。页面 HTML 已内嵌进 worker.js，故无静态资源管线。
+# 面板 Worker 配置。账号相关的值都用占位符，部署前替换成你自己的。
+# 说明：实际部署可经 wrangler deploy（需 Node 22+），或经 Cloudflare API 直接上传
+# 单文件 worker.js（页面 HTML 已内嵌，无静态资源管线）。
 name = "panel"
 main = "src/worker.js"
 compatibility_date = "2024-11-01"
 workers_dev = false            # 关闭 workers.dev，杜绝绕过 Access 的直连
 
+# 先建一个 KV 命名空间：`wrangler kv namespace create NODES`，把返回的 id 填这里。
 [[kv_namespaces]]
 binding = "NODES"
 id = "<YOUR_KV_NAMESPACE_ID>"
 
+# 换成你自己的自定义域（需已在本 Cloudflare 账号托管该 zone）。
 [[routes]]
-pattern = "panel.doge-liang-space.uk"
+pattern = "panel.example.com"
 custom_domain = true
+
+# 账号相关配置（worker.js 从 env 读）。PANEL_AUD 属半敏感，建议用
+# `wrangler secret put PANEL_AUD` 或面板设为 secret，而非提交进本文件。
+[vars]
+TEAM_DOMAIN = "your-team.cloudflareaccess.com"   # Access 团队域
+ZONE_SUFFIX = ".example.com"                     # 允许的节点域名后缀（留空=只校验 https）
+# PANEL_AUD 用 secret 注入，不写这里
+# SEED_NODES = '[]'                              # 可选：初始节点表 JSON

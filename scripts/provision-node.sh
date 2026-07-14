@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # 在新机器上一键起 mobile-terminal 栈 + token 化 cloudflared tunnel + tmux 会话持久化。
-# 用法: TUNNEL_TOKEN=... ACCESS_AUD=... ./scripts/provision-node.sh <ssh-host> <main-host>
-#   <ssh-host>  已在 ~/.ssh/config 配好免密的别名，如 node-b
-#   <main-host> 对外域名，如 term2.doge-liang-space.uk
+# 用法: TUNNEL_TOKEN=... ACCESS_AUD=... TEAM_DOMAIN=... ./scripts/provision-node.sh <ssh-host> <main-host>
+#   <ssh-host>    已在 ~/.ssh/config 配好免密的别名，如 my-node
+#   <main-host>   对外域名，如 term2.example.com
+#   TEAM_DOMAIN   Cloudflare Access 团队域，如 your-team.cloudflareaccess.com
 set -euo pipefail
 
 SSH_HOST="${1:?need ssh host}"
 MAIN_HOST="${2:?need main host}"
 : "${TUNNEL_TOKEN:?need TUNNEL_TOKEN}"
 : "${ACCESS_AUD:?need ACCESS_AUD}"
-TEAM_DOMAIN="doge-liang.cloudflareaccess.com"
+: "${TEAM_DOMAIN:?need TEAM_DOMAIN}"
 DIR="/root/mobile-terminal-web"
 # 本控制机上的仓库即部署源（GitHub 仓库为私有，新机器无凭据；从这里 tar 过去更可靠）。
 LOCAL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,7 +104,7 @@ cat > /etc/profile.d/term-dl.sh <<'DLEOF'
 dl() {
   local host
   host=$(sed -n 's/^MAIN_HOST=//p' /etc/default/mobile-terminal 2>/dev/null)
-  host=${host:-term.doge-liang-space.uk}
+  host=${host:-term.example.com}
   if [ "$#" -eq 0 ]; then echo "用法: dl <文件> [更多文件…]" >&2; return 2; fi
   local f abs enc
   for f in "$@"; do
