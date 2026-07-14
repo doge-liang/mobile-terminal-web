@@ -925,6 +925,14 @@
   const fpList = document.getElementById('fp-list');
   const fpInput = document.getElementById('fp-input');
   let fpCwd = null; // 当前浏览目录（绝对路径)
+  const previewPanel = document.getElementById('preview-panel');
+  const pvTitle = document.getElementById('pv-title');
+  const pvBody = document.getElementById('pv-body');
+  const pvDownload = document.getElementById('pv-download');
+  const pvClose = document.getElementById('pv-close');
+  // html:false —— 文档内嵌原始 HTML 被转义而非执行,挡掉 <script> 注入。
+  // 容错:markdown-it 若未加载(如 vendor 未同步),降级为纯文本预览,绝不因此让文件浏览器初始化中断。
+  const md = window.markdownit ? window.markdownit({ html: false, linkify: true, breaks: false }) : null;
 
   function fmtSize(n) {
     if (n < 1024) return `${n}B`;
@@ -936,6 +944,58 @@
   const FP_ICON_DIR = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
   const FP_ICON_LINK = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
   const FP_ICON_FILE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>';
+  const FP_ICON_DL = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
+
+  // 系统下载:HEAD 预检通过才导航,避免出错时把 App 跳到裸 JSON 错误页
+  async function downloadFile(abs) {
+    const dlUrl = `/t/dl?path=${encodeURIComponent(abs)}`;
+    try {
+      const r = await fetchT(dlUrl, { method: 'HEAD' }, 8000);
+      if (!r.ok) {
+        flashNote(r.status === 404 ? '文件不存在' : r.status === 403 ? '无权限读取'
+          : r.status === 400 ? '无法下载（目录或符号链接）' : `下载失败: HTTP ${r.status}`);
+        return;
+      }
+      window.location.href = dlUrl; // 预检通过,触发系统下载
+    } catch {
+      flashNote('下载失败: 网络错误');
+    }
+  }
+
+  // 点文件:取内容,按服务端返回的 type 分派预览 / 下载
+  async function openFile(abs, name) {
+    let r, data;
+    try {
+      r = await fetchT(`/t/read?path=${encodeURIComponent(abs)}`, {}, 10000);
+      data = await r.json().catch(() => ({}));
+    } catch { flashNote('打开失败: 网络错误'); return; }
+    if (!r.ok) { flashNote(data.error || `打开失败: HTTP ${r.status}`); return; }
+    if (data.type === 'markdown' && md) {
+      pvBody.className = 'pv-body pv-md';
+      pvBody.innerHTML = md.render(data.text || ''); // html:false 已挡注入
+      showPreview(name, abs);
+    } else if (data.type === 'text' || data.type === 'markdown') {
+      // text,或 markdown 但库未加载:只读等宽展示原文
+      pvBody.className = 'pv-body pv-text';
+      pvBody.innerHTML = '';
+      const pre = document.createElement('pre');
+      pre.textContent = data.text || ''; // 纯文本,textContent 防注入
+      pvBody.appendChild(pre);
+      showPreview(name, abs);
+    } else {
+      // download / tooBig / binary → 系统下载
+      if (data.type === 'tooBig') flashNote('文件较大,改为下载');
+      downloadFile(abs);
+    }
+  }
+
+  function showPreview(name, abs) {
+    pvTitle.textContent = name;                 // 文件名走 textContent,防注入
+    pvBody.scrollTop = 0;
+    pvDownload.onclick = () => downloadFile(abs);
+    previewPanel.hidden = false;
+  }
+
   async function fpLoad(dir) {
     fpList.innerHTML = '<div class="sp-empty">加载中…</div>';
     const url = dir ? `/t/ls?path=${encodeURIComponent(dir)}` : '/t/ls';
@@ -976,26 +1036,20 @@
         nameEl.appendChild(extEl);
       }
       const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
+      row.appendChild(pick);
       if (e.type === 'dir') {
         pick.addEventListener('click', () => fpLoad(abs));
       } else {
-        // 文件:先 HEAD 预检,通过才导航下载——避免出错时把 App 跳到裸 JSON 错误页
-        pick.addEventListener('click', async () => {
-          const dlUrl = `/t/dl?path=${encodeURIComponent(abs)}`;
-          try {
-            const r = await fetchT(dlUrl, { method: 'HEAD' }, 8000);
-            if (!r.ok) {
-              flashNote(r.status === 404 ? '文件不存在' : r.status === 403 ? '无权限读取'
-                : r.status === 400 ? '无法下载（目录或符号链接）' : `下载失败: HTTP ${r.status}`);
-              return;
-            }
-            window.location.href = dlUrl; // 预检通过,触发系统下载
-          } catch {
-            flashNote('下载失败: 网络错误');
-          }
-        });
+        // 点文件名:取内容按类型预览,不可预览的回落系统下载
+        pick.addEventListener('click', () => openFile(abs, e.name));
+        // 行尾下载图标:与预览解耦,任何文件一点即下载(icon 是可信静态 SVG 常量)
+        const dl = document.createElement('button');
+        dl.className = 'fp-dl';
+        dl.title = '下载';
+        dl.innerHTML = FP_ICON_DL;
+        dl.addEventListener('click', () => downloadFile(abs));
+        row.appendChild(dl);
       }
-      row.appendChild(pick);
       fpList.appendChild(row);
     }
   }
@@ -1003,6 +1057,8 @@
   document.getElementById('btn-files').addEventListener('click', () => { document.getElementById('session-panel').hidden = true; filePanel.hidden = false; fpLoad(null); });
   document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
   filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
+  pvClose.addEventListener('click', () => { previewPanel.hidden = true; });
+  previewPanel.addEventListener('click', (ev) => { if (ev.target === previewPanel) previewPanel.hidden = true; });
   document.getElementById('fp-up').addEventListener('click', () => { const par = fpPath.dataset.parent; if (par) fpLoad(par); });
   document.getElementById('fp-upload').addEventListener('click', () => fpInput.click());
   fpInput.addEventListener('change', async () => {

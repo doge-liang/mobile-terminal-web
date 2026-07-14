@@ -94,10 +94,21 @@
       </div>
     </div>
   </div>
+  <div id="preview-panel" hidden>
+    <div class="pv-box">
+      <div class="pv-head">
+        <span id="pv-title" class="pv-title"></span>
+        <button id="pv-download" class="pv-btn" title="下载"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
+        <button id="pv-close" class="sp-x" title="关闭"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div id="pv-body" class="pv-body"></div>
+    </div>
+  </div>
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <script src="/vendor/addon-web-links.js"></script>
   <script src="/vendor/addon-unicode11.js"></script>
+  <script src="/vendor/markdown-it.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
