@@ -7,6 +7,7 @@ const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
+const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES } = require('./lib/preview');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -574,6 +575,26 @@ const requestHandler = async (req, res) => {
       stream.pipe(res);
       console.log(`[${new Date().toISOString()}] ${auth.email} downloaded ${p} (${st.size} bytes)`);
       return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/t/read') {
+      const p = url.searchParams.get('path');
+      if (!p) return json(res, 400, { error: 'missing path' });
+      let st;
+      try { st = await fs.promises.stat(p); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
+      if (st.isDirectory()) return json(res, 400, { error: '不能预览目录' });
+      const type = classifyPreview(path.basename(p));
+      // 未知/二进制扩展名 或 过大:不读正文,让前端走系统下载
+      if (type === 'download') return json(res, 200, { type: 'download', size: st.size });
+      if (st.size > PREVIEW_MAX_BYTES) return json(res, 200, { type: 'tooBig', size: st.size });
+      let buf;
+      try { buf = await fs.promises.readFile(p); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
+      // 白名单扩展名但内容含 NUL:判二进制,回落下载
+      if (looksBinary(buf.subarray(0, 8192))) return json(res, 200, { type: 'binary', size: st.size });
+      console.log(`[${new Date().toISOString()}] ${auth.email} previewed ${p} (${st.size} bytes)`);
+      return json(res, 200, { type, text: buf.toString('utf8'), size: st.size });
     }
 
     if (req.method === 'GET' && url.pathname === '/t/ls') {
