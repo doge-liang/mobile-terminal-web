@@ -322,6 +322,19 @@ html, body {
 .fp-name { display: flex; flex: 1; min-width: 0; overflow: hidden; }
 .fp-name .fn-stem { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-name .fn-ext { flex: none; white-space: nowrap; }
+/* 行尾下载图标:点文件名=预览,点它=直接下载 */
+.fp-dl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: #8b949e;
+  cursor: pointer;
+}
+.fp-dl:active { background: var(--border); color: var(--fg); }
 /* file-panel text buttons: leading icon + boxed like the panel's other controls */
 #fp-up, #fp-upload {
   display: inline-flex;

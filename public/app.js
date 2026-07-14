@@ -944,6 +944,7 @@
   const FP_ICON_DIR = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
   const FP_ICON_LINK = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
   const FP_ICON_FILE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>';
+  const FP_ICON_DL = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
 
   // 系统下载:HEAD 预检通过才导航,避免出错时把 App 跳到裸 JSON 错误页
   async function downloadFile(abs) {
@@ -1035,13 +1036,20 @@
         nameEl.appendChild(extEl);
       }
       const abs = (fpCwd.endsWith('/') ? fpCwd : fpCwd + '/') + e.name;
+      row.appendChild(pick);
       if (e.type === 'dir') {
         pick.addEventListener('click', () => fpLoad(abs));
       } else {
-        // 文件:取内容按类型预览,不可预览的回落系统下载
+        // 点文件名:取内容按类型预览,不可预览的回落系统下载
         pick.addEventListener('click', () => openFile(abs, e.name));
+        // 行尾下载图标:与预览解耦,任何文件一点即下载(icon 是可信静态 SVG 常量)
+        const dl = document.createElement('button');
+        dl.className = 'fp-dl';
+        dl.title = '下载';
+        dl.innerHTML = FP_ICON_DL;
+        dl.addEventListener('click', () => downloadFile(abs));
+        row.appendChild(dl);
       }
-      row.appendChild(pick);
       fpList.appendChild(row);
     }
   }
