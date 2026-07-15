@@ -7,7 +7,7 @@ const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
-const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES } = require('./lib/preview');
+const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -612,6 +612,10 @@ const requestHandler = async (req, res) => {
       catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
       if (st.isDirectory()) return json(res, 400, { error: '不能预览目录' });
       const type = classifyPreview(path.basename(p));
+      // 图片:不读正文,前端用 <img src="/t/dl"> 显示;超限回落下载
+      if (type === 'image') {
+        return json(res, 200, st.size > PREVIEW_IMG_MAX ? { type: 'tooBig', size: st.size } : { type: 'image', size: st.size });
+      }
       // 未知/二进制扩展名 或 过大:不读正文,让前端走系统下载
       if (type === 'download') return json(res, 200, { type: 'download', size: st.size });
       if (st.size > PREVIEW_MAX_BYTES) return json(res, 200, { type: 'tooBig', size: st.size });
