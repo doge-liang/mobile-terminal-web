@@ -401,7 +401,11 @@ html, body {
 .pv-btn:active, .pv-head .sp-x:active { opacity: 1; }
 .pv-body {
   flex: 1; min-height: 0; overflow: auto;
-  padding: 16px; -webkit-overflow-scrolling: touch;
+  /* 左右留出随视口自适应的阅读边距(手机 16px 起、宽屏最多 40px),上下 18px */
+  padding: 18px clamp(16px, 4vw, 40px);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: auto;      /* 用系统原生宽度滚动条,不套 app 的细滚动条样式 */
+  scrollbar-gutter: stable;   /* 预留滚动条沟槽:正文不被压、有无滚动条时不左右抖动 */
 }
 /* 纯文本:等宽、保留空白、横向可滚 */
 .pv-text pre {
