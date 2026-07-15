@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "build:hljs": "esbuild node_modules/highlight.js/lib/common.js --bundle --minify --format=iife --global-name=hljs --platform=browser --outfile=public/vendor/highlight.min.js"
   },
   "license": "MIT",
   "dependencies": {
@@ -20,5 +21,8 @@
     "markdown-it": "^14.3.0",
     "node-pty": "^1.0.0",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

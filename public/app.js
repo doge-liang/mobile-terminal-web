@@ -945,10 +945,11 @@
         loadStyle('/vendor/highlight-github-dark.css'),
         loadStyle('/vendor/katex/katex.min.css'),
         loadScript('/vendor/markdown-it.min.js'),
+        loadScript('/vendor/highlight.min.js'),   // UMD 全局 hljs(esbuild 从 npm 源打包,见 build:hljs)
       ]);
       await loadScript('/vendor/katex/katex.min.js');            // katex 全局
       await loadScript('/vendor/katex/contrib/auto-render.min.js'); // 依赖 katex,后加载
-      hljs = (await import('/vendor/hljs/common.js')).default;   // ESM 动态 import
+      hljs = window.hljs;
     })();
     // 加载失败(本 app 隧道偶发黑洞)时清空缓存,下次打开重试,避免整个会话永久降级
     previewAssetsPromise.catch(() => { previewAssetsPromise = null; });

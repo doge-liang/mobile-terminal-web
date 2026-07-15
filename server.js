@@ -300,7 +300,6 @@ const VENDOR = {
 // 目录前缀 vendor:把 /vendor/<prefix>/<rest> 映射到 node_modules 下某目录。
 // hljs 的 ESM 子模块(es/common.js import 的相对文件)、KaTeX 的字体(css 内相对 fonts/)都靠这个解析。
 const VENDOR_DIRS = {
-  '/vendor/hljs/': 'node_modules/highlight.js/es',
   '/vendor/katex/': 'node_modules/katex/dist',
 };
 // 解析目录前缀请求为磁盘绝对路径;越出基目录(路径穿越)返回 null。
