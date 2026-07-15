@@ -1009,6 +1009,19 @@
       data = await r.json().catch(() => ({}));
     } catch { flashNote('打开失败: 网络错误'); return; }
     if (!r.ok) { flashNote(data.error || `打开失败: HTTP ${r.status}`); return; }
+    if (data.type === 'image') {
+      pvTitle.textContent = name;
+      pvBody.className = 'pv-body pv-image';
+      pvBody.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = `/t/dl?path=${encodeURIComponent(abs)}`; // 经鉴权门取原图;SVG 作 <img> 源脚本沙箱化
+      img.alt = name;
+      img.onerror = () => { flashNote('图片加载失败'); };
+      pvBody.appendChild(img);
+      pvDownload.onclick = () => downloadFile(abs);
+      previewPanel.hidden = false;
+      return;
+    }
     if (data.type === 'markdown' || data.type === 'text') {
       pvTitle.textContent = name;
       pvBody.className = 'pv-body';
