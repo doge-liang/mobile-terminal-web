@@ -1020,6 +1020,21 @@
       if (data.type === 'markdown' && assetsOk) {
         pvBody.className = 'pv-body markdown-body';
         pvBody.innerHTML = getMd().render(data.text || ''); // html:false 已挡注入
+        // 公式:扫描已渲染 DOM;ignoredTags 含 pre/code,代码里的 $ 不会被误当公式
+        if (window.renderMathInElement) {
+          try {
+            window.renderMathInElement(pvBody, {
+              delimiters: [
+                { left: '$$', right: '$$', display: true },
+                { left: '$', right: '$', display: false },
+                { left: '\\(', right: '\\)', display: false },
+                { left: '\\[', right: '\\]', display: true },
+              ],
+              throwOnError: false,
+              ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            });
+          } catch { /* 公式渲染失败不影响正文 */ }
+        }
       } else if (data.type === 'text' && assetsOk && hljs) {
         // 独立代码/文本文件:hljs 自动识别高亮
         let html = null;
