@@ -7,7 +7,7 @@ const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
-const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES } = require('./lib/preview');
+const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -282,6 +282,8 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
 };
@@ -292,7 +294,29 @@ const VENDOR = {
   '/vendor/addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
   '/vendor/addon-unicode11.js': 'node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js',
   '/vendor/markdown-it.min.js': 'node_modules/markdown-it/dist/markdown-it.min.js',
+  '/vendor/github-markdown-dark.css': 'node_modules/github-markdown-css/github-markdown-dark.css',
+  '/vendor/highlight-github-dark.css': 'node_modules/highlight.js/styles/github-dark.min.css',
 };
+// 目录前缀 vendor:把 /vendor/<prefix>/<rest> 映射到 node_modules 下某目录。
+// hljs 的 ESM 子模块(es/common.js import 的相对文件)、KaTeX 的字体(css 内相对 fonts/)都靠这个解析。
+const VENDOR_DIRS = {
+  '/vendor/katex/': 'node_modules/katex/dist',
+};
+// 解析目录前缀请求为磁盘绝对路径;越出基目录(路径穿越)返回 null。
+function resolveVendorDir(pathname) {
+  for (const prefix in VENDOR_DIRS) {
+    if (pathname.startsWith(prefix)) {
+      const baseAbs = path.join(__dirname, VENDOR_DIRS[prefix]);
+      let rest;
+      try { rest = decodeURIComponent(pathname.slice(prefix.length)); } catch { return null; }
+      const abs = path.join(baseAbs, rest);
+      // 防穿越:解析后必须仍在 baseAbs 之内
+      if (abs !== baseAbs && !abs.startsWith(baseAbs + path.sep)) return null;
+      return abs;
+    }
+  }
+  return null;
+}
 
 const requestHandler = async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -587,6 +611,10 @@ const requestHandler = async (req, res) => {
       catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限读取' : '文件不存在' }); }
       if (st.isDirectory()) return json(res, 400, { error: '不能预览目录' });
       const type = classifyPreview(path.basename(p));
+      // 图片:不读正文,前端用 <img src="/t/dl"> 显示;超限回落下载
+      if (type === 'image') {
+        return json(res, 200, st.size > PREVIEW_IMG_MAX ? { type: 'tooBig', size: st.size } : { type: 'image', size: st.size });
+      }
       // 未知/二进制扩展名 或 过大:不读正文,让前端走系统下载
       if (type === 'download') return json(res, 200, { type: 'download', size: st.size });
       if (st.size > PREVIEW_MAX_BYTES) return json(res, 200, { type: 'tooBig', size: st.size });
@@ -704,7 +732,10 @@ const requestHandler = async (req, res) => {
   }
 
   let filePath = null;
-  if (VENDOR[url.pathname]) {
+  const vendorDir = resolveVendorDir(url.pathname);
+  if (vendorDir) {
+    filePath = vendorDir;
+  } else if (VENDOR[url.pathname]) {
     filePath = path.join(__dirname, VENDOR[url.pathname]);
   } else {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);

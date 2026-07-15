@@ -932,9 +932,47 @@
   const pvBody = document.getElementById('pv-body');
   const pvDownload = document.getElementById('pv-download');
   const pvClose = document.getElementById('pv-close');
-  // html:false —— 文档内嵌原始 HTML 被转义而非执行,挡掉 <script> 注入。
-  // 容错:markdown-it 若未加载(如 vendor 未同步),降级为纯文本预览,绝不因此让文件浏览器初始化中断。
-  const md = window.markdownit ? window.markdownit({ html: false, linkify: true, breaks: false }) : null;
+  // 预览依赖懒加载:首次开预览才拉,终端首屏不背这堆体积
+  let previewAssetsPromise = null;
+  let hljs = null, mdInst = null;
+  function loadStyle(href) { return new Promise((ok, err) => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.onload = ok; l.onerror = err; document.head.appendChild(l); }); }
+  function loadScript(src) { return new Promise((ok, err) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = err; document.head.appendChild(s); }); }
+  function ensurePreviewAssets() {
+    if (previewAssetsPromise) return previewAssetsPromise;
+    previewAssetsPromise = (async () => {
+      await Promise.all([
+        loadStyle('/vendor/github-markdown-dark.css'),
+        loadStyle('/vendor/highlight-github-dark.css'),
+        loadStyle('/vendor/katex/katex.min.css'),
+        loadScript('/vendor/markdown-it.min.js'),
+        loadScript('/vendor/highlight.min.js'),   // UMD 全局 hljs(esbuild 从 npm 源打包,见 build:hljs)
+      ]);
+      await loadScript('/vendor/katex/katex.min.js');            // katex 全局
+      await loadScript('/vendor/katex/contrib/auto-render.min.js'); // 依赖 katex,后加载
+      hljs = window.hljs;
+    })();
+    // 加载失败(本 app 隧道偶发黑洞)时清空缓存,下次打开重试,避免整个会话永久降级
+    previewAssetsPromise.catch(() => { previewAssetsPromise = null; });
+    return previewAssetsPromise;
+  }
+  // 惰性构造 markdown-it(资源就绪后)
+  function getMd() {
+    if (mdInst) return mdInst;
+    mdInst = window.markdownit({
+      html: false, linkify: true, breaks: false,
+      // 围栏代码块:有 hljs 且识别该语言就高亮,否则转义;统一套 .hljs 主题类
+      highlight: (code, lang) => {
+        if (hljs && lang && hljs.getLanguage(lang)) {
+          try {
+            const out = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+            return `<pre class="hljs"><code>${out}</code></pre>`;
+          } catch { /* 落到下面的转义分支 */ }
+        }
+        return `<pre class="hljs"><code>${mdInst.utils.escapeHtml(code)}</code></pre>`;
+      },
+    });
+    return mdInst;
+  }
 
   function fmtSize(n) {
     if (n < 1024) return `${n}B`;
@@ -974,30 +1012,73 @@
       data = await r.json().catch(() => ({}));
     } catch { flashNote('打开失败: 网络错误'); return; }
     if (!r.ok) { flashNote(data.error || `打开失败: HTTP ${r.status}`); return; }
-    if (data.type === 'markdown' && md) {
-      pvBody.className = 'pv-body pv-md';
-      pvBody.innerHTML = md.render(data.text || ''); // html:false 已挡注入
-      showPreview(name, abs);
-    } else if (data.type === 'text' || data.type === 'markdown') {
-      // text,或 markdown 但库未加载:只读等宽展示原文
-      pvBody.className = 'pv-body pv-text';
+    if (data.type === 'image') {
+      pvTitle.textContent = name;
+      pvBody.className = 'pv-body pv-image';
       pvBody.innerHTML = '';
-      const pre = document.createElement('pre');
-      pre.textContent = data.text || ''; // 纯文本,textContent 防注入
-      pvBody.appendChild(pre);
-      showPreview(name, abs);
+      const img = document.createElement('img');
+      img.src = `/t/dl?path=${encodeURIComponent(abs)}`; // 经鉴权门取原图;SVG 作 <img> 源脚本沙箱化
+      img.alt = name;
+      img.onerror = () => { flashNote('图片加载失败'); };
+      pvBody.appendChild(img);
+      pvDownload.onclick = () => downloadFile(abs);
+      previewPanel.hidden = false;
+      return;
+    }
+    if (data.type === 'markdown' || data.type === 'text') {
+      pvTitle.textContent = name;
+      pvBody.className = 'pv-body';
+      pvBody.innerHTML = '<div class="sp-empty">加载中…</div>';
+      previewPanel.hidden = false;
+      pvDownload.onclick = () => downloadFile(abs);
+      let assetsOk = true;
+      try { await ensurePreviewAssets(); } catch { assetsOk = false; }
+      if (data.type === 'markdown' && assetsOk) {
+        pvBody.className = 'pv-body markdown-body';
+        pvBody.innerHTML = getMd().render(data.text || ''); // html:false 已挡注入
+        // 公式:扫描已渲染 DOM;ignoredTags 含 pre/code,代码里的 $ 不会被误当公式
+        if (window.renderMathInElement) {
+          try {
+            window.renderMathInElement(pvBody, {
+              delimiters: [
+                { left: '$$', right: '$$', display: true },
+                { left: '$', right: '$', display: false },
+                { left: '\\(', right: '\\)', display: false },
+                { left: '\\[', right: '\\]', display: true },
+              ],
+              throwOnError: false,
+              ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            });
+          } catch { /* 公式渲染失败不影响正文 */ }
+        }
+      } else if (data.type === 'text' && assetsOk && hljs) {
+        // 独立代码/文本文件:hljs 自动识别高亮
+        let html = null;
+        try { html = hljs.highlightAuto(data.text || '').value; } catch { html = null; } // 高亮抛错则回落纯文本
+        if (html !== null) {
+          pvBody.className = 'pv-body pv-code';
+          pvBody.innerHTML = `<pre class="hljs"><code>${html}</code></pre>`; // hljs .value 已转义
+        } else {
+          // 高亮失败:走 textContent,绝不把未转义原文塞进 innerHTML
+          pvBody.className = 'pv-body pv-text';
+          pvBody.innerHTML = '';
+          const pre = document.createElement('pre');
+          pre.textContent = data.text || '';
+          pvBody.appendChild(pre);
+        }
+      } else {
+        // 资源失败或非文本:只读纯文本
+        pvBody.className = 'pv-body pv-text';
+        pvBody.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.textContent = data.text || '';
+        pvBody.appendChild(pre);
+      }
+      pvBody.scrollTop = 0;
     } else {
-      // download / tooBig / binary → 系统下载
       if (data.type === 'tooBig') flashNote('文件较大,改为下载');
       downloadFile(abs);
     }
-  }
-
-  function showPreview(name, abs) {
-    pvTitle.textContent = name;                 // 文件名走 textContent,防注入
-    pvBody.scrollTop = 0;
-    pvDownload.onclick = () => downloadFile(abs);
-    previewPanel.hidden = false;
   }
 
   async function fpLoad(dir) {
@@ -1007,11 +1088,12 @@
     try {
       const r = await fetchT(url, {}, 8000);
       data = await r.json().catch(() => ({}));
-      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return; }
-    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return; }
+      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return false; }
+    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return false; }
 
-    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return; }
+    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return false; }
     fpCwd = data.path;
+    sessionStorage.setItem('fpLastDir', data.path); // 按 Tab 缓存最近目录,重开回到这里
     fpPath.textContent = data.path;
     fpPath.dataset.parent = data.parent;
     fpList.innerHTML = '';
@@ -1059,9 +1141,16 @@
       }
       fpList.appendChild(row);
     }
+    return true; // 成功加载,供打开时判断记忆目录是否仍有效
   }
 
-  document.getElementById('btn-files').addEventListener('click', () => { document.getElementById('session-panel').hidden = true; filePanel.hidden = false; fpLoad(null); });
+  // 打开文件浏览器:回到本 Tab 上次浏览的目录;记忆目录已失效则退回 $HOME
+  document.getElementById('btn-files').addEventListener('click', async () => {
+    document.getElementById('session-panel').hidden = true;
+    filePanel.hidden = false;
+    const last = sessionStorage.getItem('fpLastDir');
+    if (!(await fpLoad(last || null)) && last) fpLoad(null);
+  });
   document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
   filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
   pvClose.addEventListener('click', () => { previewPanel.hidden = true; });

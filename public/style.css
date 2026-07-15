@@ -401,31 +401,30 @@ html, body {
 .pv-btn:active, .pv-head .sp-x:active { opacity: 1; }
 .pv-body {
   flex: 1; min-height: 0; overflow: auto;
-  padding: 16px; -webkit-overflow-scrolling: touch;
+  /* 左右留出随视口自适应的阅读边距(手机 16px 起、宽屏最多 40px),上下 18px */
+  padding: 18px clamp(16px, 4vw, 40px);
+  -webkit-overflow-scrolling: touch;
+  color-scheme: dark;         /* 告诉浏览器这块是深色,原生滚动条随之画成深色(不再是白色) */
+  scrollbar-gutter: stable;   /* 预留滚动条沟槽:正文不被压、有无滚动条时不左右抖动 */
 }
 /* 纯文本:等宽、保留空白、横向可滚 */
 .pv-text pre {
   margin: 0; white-space: pre; overflow-x: auto;
   font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5;
 }
-/* Markdown 排版 */
-.pv-md { line-height: 1.65; font-size: 15px; word-wrap: break-word; }
-.pv-md h1, .pv-md h2 { border-bottom: 1px solid rgba(255,255,255,0.12); padding-bottom: 0.3em; }
-.pv-md h1, .pv-md h2, .pv-md h3, .pv-md h4 { margin: 1.2em 0 0.6em; line-height: 1.3; }
-.pv-md p, .pv-md ul, .pv-md ol, .pv-md blockquote, .pv-md pre, .pv-md table { margin: 0.7em 0; }
-.pv-md code {
-  font-family: ui-monospace, monospace; font-size: 0.9em;
-  background: rgba(255,255,255,0.08); padding: 0.15em 0.35em; border-radius: 4px;
+/* 独立代码文件预览:让 hljs 主题背景铺满、可横向滚 */
+.pv-body.pv-code { padding: 0; }
+.pv-body.pv-code pre.hljs { margin: 0; padding: 16px; overflow-x: auto; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5; border-radius: 0; min-height: 100%; box-sizing: border-box; }
+.markdown-body pre.hljs { padding: 12px; border-radius: 6px; }   /* markdown 内代码块 */
+/* 图片预览:居中、适配容器、深色棋盘背景便于看透明图 */
+.pv-body.pv-image { display: flex; align-items: center; justify-content: center; }
+.pv-body.pv-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* Markdown 用 github-markdown-css 的 .markdown-body 皮肤;这里只做容器级适配 */
+.pv-body.markdown-body {
+  box-sizing: border-box;
+  background: transparent;   /* 用预览层自身深色底,不要皮肤的白/黑底覆盖 */
+  color: #d4d4d4;
 }
-.pv-md pre {
-  background: rgba(0,0,0,0.35); padding: 12px; border-radius: 6px; overflow-x: auto;
-}
-.pv-md pre code { background: transparent; padding: 0; }
-.pv-md blockquote {
-  border-left: 3px solid rgba(255,255,255,0.25); padding-left: 12px;
-  margin-left: 0; opacity: 0.85;
-}
-.pv-md a { color: #4ea1f3; }
-.pv-md img { max-width: 100%; height: auto; }
-.pv-md table { border-collapse: collapse; display: block; overflow-x: auto; }
-.pv-md th, .pv-md td { border: 1px solid rgba(255,255,255,0.15); padding: 6px 10px; }
+.markdown-body { --base-size-16: 15px; font-size: 15px; }
+.markdown-body pre { overflow-x: auto; }   /* 窄屏代码块横向可滚 */
+.markdown-body img { max-width: 100%; height: auto; }
