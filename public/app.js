@@ -1007,11 +1007,12 @@
     try {
       const r = await fetchT(url, {}, 8000);
       data = await r.json().catch(() => ({}));
-      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return; }
-    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return; }
+      if (!r.ok) { fpList.innerHTML = '<div class="sp-empty"></div>'; fpList.firstChild.textContent = data.error || `HTTP ${r.status}`; return false; }
+    } catch { fpList.innerHTML = '<div class="sp-empty">网络错误</div>'; return false; }
 
-    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return; }
+    if (!data || !Array.isArray(data.entries)) { fpList.innerHTML = '<div class="sp-empty">返回数据异常</div>'; return false; }
     fpCwd = data.path;
+    sessionStorage.setItem('fpLastDir', data.path); // 按 Tab 缓存最近目录,重开回到这里
     fpPath.textContent = data.path;
     fpPath.dataset.parent = data.parent;
     fpList.innerHTML = '';
@@ -1059,9 +1060,16 @@
       }
       fpList.appendChild(row);
     }
+    return true; // 成功加载,供打开时判断记忆目录是否仍有效
   }
 
-  document.getElementById('btn-files').addEventListener('click', () => { document.getElementById('session-panel').hidden = true; filePanel.hidden = false; fpLoad(null); });
+  // 打开文件浏览器:回到本 Tab 上次浏览的目录;记忆目录已失效则退回 $HOME
+  document.getElementById('btn-files').addEventListener('click', async () => {
+    document.getElementById('session-panel').hidden = true;
+    filePanel.hidden = false;
+    const last = sessionStorage.getItem('fpLastDir');
+    if (!(await fpLoad(last || null)) && last) fpLoad(null);
+  });
   document.getElementById('fp-close').addEventListener('click', () => { filePanel.hidden = true; });
   filePanel.addEventListener('click', (e) => { if (e.target === filePanel) filePanel.hidden = true; });
   pvClose.addEventListener('click', () => { previewPanel.hidden = true; });

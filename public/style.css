@@ -404,7 +404,7 @@ html, body {
   /* 左右留出随视口自适应的阅读边距(手机 16px 起、宽屏最多 40px),上下 18px */
   padding: 18px clamp(16px, 4vw, 40px);
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: auto;      /* 用系统原生宽度滚动条,不套 app 的细滚动条样式 */
+  color-scheme: dark;         /* 告诉浏览器这块是深色,原生滚动条随之画成深色(不再是白色) */
   scrollbar-gutter: stable;   /* 预留滚动条沟槽:正文不被压、有无滚动条时不左右抖动 */
 }
 /* 纯文本:等宽、保留空白、横向可滚 */
@@ -417,6 +417,10 @@ html, body {
 .pv-md h1, .pv-md h2 { border-bottom: 1px solid rgba(255,255,255,0.12); padding-bottom: 0.3em; }
 .pv-md h1, .pv-md h2, .pv-md h3, .pv-md h4 { margin: 1.2em 0 0.6em; line-height: 1.3; }
 .pv-md p, .pv-md ul, .pv-md ol, .pv-md blockquote, .pv-md pre, .pv-md table { margin: 0.7em 0; }
+/* 全局 reset 清掉了 ul/ol 默认左内边距,这里补回:项目符号缩进、续行挂在首行文字下 */
+.pv-md ul, .pv-md ol { padding-left: 1.75em; }
+.pv-md li { margin: 0.25em 0; }
+.pv-md li > ul, .pv-md li > ol { margin: 0.25em 0; }  /* 嵌套列表不额外撑开上下 */
 .pv-md code {
   font-family: ui-monospace, monospace; font-size: 0.9em;
   background: rgba(255,255,255,0.08); padding: 0.15em 0.35em; border-radius: 4px;
