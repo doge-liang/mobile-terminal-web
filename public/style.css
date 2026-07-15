@@ -336,7 +336,7 @@ html, body {
 }
 .fp-dl:active { background: var(--border); color: var(--fg); }
 /* file-panel text buttons: leading icon + boxed like the panel's other controls */
-#fp-up, #fp-upload {
+#fp-up, #fp-upload, #fp-hidden {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -351,8 +351,10 @@ html, body {
   white-space: nowrap;
   cursor: pointer;
 }
-#fp-up:active, #fp-upload:active { background: var(--border); }
+#fp-up:active, #fp-upload:active, #fp-hidden:active { background: var(--border); }
 #fp-upload { flex: 1; }
+/* 隐藏文件开关:显示隐藏项时高亮,提示当前处于"显示"态 */
+#fp-hidden.on { color: var(--accent); border-color: var(--accent); }
 
 /* themed scrollbars — the panel scroll areas and the xterm viewport, so the
    terminal's bar matches the page instead of showing the native one.
