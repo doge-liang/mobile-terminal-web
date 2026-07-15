@@ -952,10 +952,22 @@
     })();
     return previewAssetsPromise;
   }
-  // 惰性构造 markdown-it(资源就绪后);highlight 选项在 Task 5 接入,这里先留占位
+  // 惰性构造 markdown-it(资源就绪后)
   function getMd() {
     if (mdInst) return mdInst;
-    mdInst = window.markdownit({ html: false, linkify: true, breaks: false });
+    mdInst = window.markdownit({
+      html: false, linkify: true, breaks: false,
+      // 围栏代码块:有 hljs 且识别该语言就高亮,否则转义;统一套 .hljs 主题类
+      highlight: (code, lang) => {
+        if (hljs && lang && hljs.getLanguage(lang)) {
+          try {
+            const out = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+            return `<pre class="hljs"><code>${out}</code></pre>`;
+          } catch { /* 落到下面的转义分支 */ }
+        }
+        return `<pre class="hljs"><code>${mdInst.utils.escapeHtml(code)}</code></pre>`;
+      },
+    });
     return mdInst;
   }
 
@@ -1008,8 +1020,15 @@
       if (data.type === 'markdown' && assetsOk) {
         pvBody.className = 'pv-body markdown-body';
         pvBody.innerHTML = getMd().render(data.text || ''); // html:false 已挡注入
+      } else if (data.type === 'text' && assetsOk && hljs) {
+        // 独立代码/文本文件:hljs 自动识别高亮
+        pvBody.className = 'pv-body pv-code';
+        let html;
+        try { html = hljs.highlightAuto(data.text || '').value; }
+        catch { html = mdInst ? mdInst.utils.escapeHtml(data.text || '') : (data.text || ''); }
+        pvBody.innerHTML = `<pre class="hljs"><code>${html}</code></pre>`;
       } else {
-        // text,或资源加载失败:只读等宽原文
+        // 资源失败或非文本:只读纯文本
         pvBody.className = 'pv-body pv-text';
         pvBody.innerHTML = '';
         const pre = document.createElement('pre');

@@ -412,6 +412,10 @@ html, body {
   margin: 0; white-space: pre; overflow-x: auto;
   font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5;
 }
+/* 独立代码文件预览:让 hljs 主题背景铺满、可横向滚 */
+.pv-body.pv-code { padding: 0; }
+.pv-body.pv-code pre.hljs { margin: 0; padding: 16px; overflow-x: auto; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5; border-radius: 0; min-height: 100%; box-sizing: border-box; }
+.markdown-body pre.hljs { padding: 12px; border-radius: 6px; }   /* markdown 内代码块 */
 /* Markdown 用 github-markdown-css 的 .markdown-body 皮肤;这里只做容器级适配 */
 .pv-body.markdown-body {
   box-sizing: border-box;
