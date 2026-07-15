@@ -412,28 +412,12 @@ html, body {
   margin: 0; white-space: pre; overflow-x: auto;
   font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5;
 }
-/* Markdown 排版 */
-.pv-md { line-height: 1.65; font-size: 15px; word-wrap: break-word; }
-.pv-md h1, .pv-md h2 { border-bottom: 1px solid rgba(255,255,255,0.12); padding-bottom: 0.3em; }
-.pv-md h1, .pv-md h2, .pv-md h3, .pv-md h4 { margin: 1.2em 0 0.6em; line-height: 1.3; }
-.pv-md p, .pv-md ul, .pv-md ol, .pv-md blockquote, .pv-md pre, .pv-md table { margin: 0.7em 0; }
-/* 全局 reset 清掉了 ul/ol 默认左内边距,这里补回:项目符号缩进、续行挂在首行文字下 */
-.pv-md ul, .pv-md ol { padding-left: 1.75em; }
-.pv-md li { margin: 0.25em 0; }
-.pv-md li > ul, .pv-md li > ol { margin: 0.25em 0; }  /* 嵌套列表不额外撑开上下 */
-.pv-md code {
-  font-family: ui-monospace, monospace; font-size: 0.9em;
-  background: rgba(255,255,255,0.08); padding: 0.15em 0.35em; border-radius: 4px;
+/* Markdown 用 github-markdown-css 的 .markdown-body 皮肤;这里只做容器级适配 */
+.pv-body.markdown-body {
+  box-sizing: border-box;
+  background: transparent;   /* 用预览层自身深色底,不要皮肤的白/黑底覆盖 */
+  color: #d4d4d4;
 }
-.pv-md pre {
-  background: rgba(0,0,0,0.35); padding: 12px; border-radius: 6px; overflow-x: auto;
-}
-.pv-md pre code { background: transparent; padding: 0; }
-.pv-md blockquote {
-  border-left: 3px solid rgba(255,255,255,0.25); padding-left: 12px;
-  margin-left: 0; opacity: 0.85;
-}
-.pv-md a { color: #4ea1f3; }
-.pv-md img { max-width: 100%; height: auto; }
-.pv-md table { border-collapse: collapse; display: block; overflow-x: auto; }
-.pv-md th, .pv-md td { border: 1px solid rgba(255,255,255,0.15); padding: 6px 10px; }
+.markdown-body { --base-size-16: 15px; font-size: 15px; }
+.markdown-body pre { overflow-x: auto; }   /* 窄屏代码块横向可滚 */
+.markdown-body img { max-width: 100%; height: auto; }

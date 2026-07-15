@@ -932,9 +932,32 @@
   const pvBody = document.getElementById('pv-body');
   const pvDownload = document.getElementById('pv-download');
   const pvClose = document.getElementById('pv-close');
-  // html:false —— 文档内嵌原始 HTML 被转义而非执行,挡掉 <script> 注入。
-  // 容错:markdown-it 若未加载(如 vendor 未同步),降级为纯文本预览,绝不因此让文件浏览器初始化中断。
-  const md = window.markdownit ? window.markdownit({ html: false, linkify: true, breaks: false }) : null;
+  // 预览依赖懒加载:首次开预览才拉,终端首屏不背这堆体积
+  let previewAssetsPromise = null;
+  let hljs = null, mdInst = null;
+  function loadStyle(href) { return new Promise((ok, err) => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.onload = ok; l.onerror = err; document.head.appendChild(l); }); }
+  function loadScript(src) { return new Promise((ok, err) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = err; document.head.appendChild(s); }); }
+  function ensurePreviewAssets() {
+    if (previewAssetsPromise) return previewAssetsPromise;
+    previewAssetsPromise = (async () => {
+      await Promise.all([
+        loadStyle('/vendor/github-markdown-dark.css'),
+        loadStyle('/vendor/highlight-github-dark.css'),
+        loadStyle('/vendor/katex/katex.min.css'),
+        loadScript('/vendor/markdown-it.min.js'),
+      ]);
+      await loadScript('/vendor/katex/katex.min.js');            // katex 全局
+      await loadScript('/vendor/katex/contrib/auto-render.min.js'); // 依赖 katex,后加载
+      hljs = (await import('/vendor/hljs/common.js')).default;   // ESM 动态 import
+    })();
+    return previewAssetsPromise;
+  }
+  // 惰性构造 markdown-it(资源就绪后);highlight 选项在 Task 5 接入,这里先留占位
+  function getMd() {
+    if (mdInst) return mdInst;
+    mdInst = window.markdownit({ html: false, linkify: true, breaks: false });
+    return mdInst;
+  }
 
   function fmtSize(n) {
     if (n < 1024) return `${n}B`;
@@ -974,30 +997,30 @@
       data = await r.json().catch(() => ({}));
     } catch { flashNote('打开失败: 网络错误'); return; }
     if (!r.ok) { flashNote(data.error || `打开失败: HTTP ${r.status}`); return; }
-    if (data.type === 'markdown' && md) {
-      pvBody.className = 'pv-body pv-md';
-      pvBody.innerHTML = md.render(data.text || ''); // html:false 已挡注入
-      showPreview(name, abs);
-    } else if (data.type === 'text' || data.type === 'markdown') {
-      // text,或 markdown 但库未加载:只读等宽展示原文
-      pvBody.className = 'pv-body pv-text';
-      pvBody.innerHTML = '';
-      const pre = document.createElement('pre');
-      pre.textContent = data.text || ''; // 纯文本,textContent 防注入
-      pvBody.appendChild(pre);
-      showPreview(name, abs);
+    if (data.type === 'markdown' || data.type === 'text') {
+      pvTitle.textContent = name;
+      pvBody.className = 'pv-body';
+      pvBody.innerHTML = '<div class="sp-empty">加载中…</div>';
+      previewPanel.hidden = false;
+      pvDownload.onclick = () => downloadFile(abs);
+      let assetsOk = true;
+      try { await ensurePreviewAssets(); } catch { assetsOk = false; }
+      if (data.type === 'markdown' && assetsOk) {
+        pvBody.className = 'pv-body markdown-body';
+        pvBody.innerHTML = getMd().render(data.text || ''); // html:false 已挡注入
+      } else {
+        // text,或资源加载失败:只读等宽原文
+        pvBody.className = 'pv-body pv-text';
+        pvBody.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.textContent = data.text || '';
+        pvBody.appendChild(pre);
+      }
+      pvBody.scrollTop = 0;
     } else {
-      // download / tooBig / binary → 系统下载
       if (data.type === 'tooBig') flashNote('文件较大,改为下载');
       downloadFile(abs);
     }
-  }
-
-  function showPreview(name, abs) {
-    pvTitle.textContent = name;                 // 文件名走 textContent,防注入
-    pvBody.scrollTop = 0;
-    pvDownload.onclick = () => downloadFile(abs);
-    previewPanel.hidden = false;
   }
 
   async function fpLoad(dir) {
