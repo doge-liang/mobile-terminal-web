@@ -287,6 +287,21 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
 };
+// 内容安全策略:脚本仅同源(挡内联注入,前端无内联 script/on* 处理器);
+// 样式放开内联——KaTeX 往元素写内联 style、xterm 注入 <style>,故 style-src 需 'unsafe-inline'。
+// 所有第三方资源已全部同源 vendored,故 default/script/img/font/connect 皆 'self'。
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 const VENDOR = {
   '/vendor/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
   '/vendor/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
@@ -757,6 +772,7 @@ const requestHandler = async (req, res) => {
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
     'Cache-Control': longCache ? 'public, max-age=2592000' : 'no-store',
+    'Content-Security-Policy': CSP,
   });
   fs.createReadStream(filePath).pipe(res);
 };
