@@ -1022,11 +1022,19 @@
         pvBody.innerHTML = getMd().render(data.text || ''); // html:false 已挡注入
       } else if (data.type === 'text' && assetsOk && hljs) {
         // 独立代码/文本文件:hljs 自动识别高亮
-        pvBody.className = 'pv-body pv-code';
-        let html;
-        try { html = hljs.highlightAuto(data.text || '').value; }
-        catch { html = mdInst ? mdInst.utils.escapeHtml(data.text || '') : (data.text || ''); }
-        pvBody.innerHTML = `<pre class="hljs"><code>${html}</code></pre>`;
+        let html = null;
+        try { html = hljs.highlightAuto(data.text || '').value; } catch { html = null; } // 高亮抛错则回落纯文本
+        if (html !== null) {
+          pvBody.className = 'pv-body pv-code';
+          pvBody.innerHTML = `<pre class="hljs"><code>${html}</code></pre>`; // hljs .value 已转义
+        } else {
+          // 高亮失败:走 textContent,绝不把未转义原文塞进 innerHTML
+          pvBody.className = 'pv-body pv-text';
+          pvBody.innerHTML = '';
+          const pre = document.createElement('pre');
+          pre.textContent = data.text || '';
+          pvBody.appendChild(pre);
+        }
       } else {
         // 资源失败或非文本:只读纯文本
         pvBody.className = 'pv-body pv-text';
