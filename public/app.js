@@ -950,6 +950,8 @@
       await loadScript('/vendor/katex/contrib/auto-render.min.js'); // 依赖 katex,后加载
       hljs = (await import('/vendor/hljs/common.js')).default;   // ESM 动态 import
     })();
+    // 加载失败(本 app 隧道偶发黑洞)时清空缓存,下次打开重试,避免整个会话永久降级
+    previewAssetsPromise.catch(() => { previewAssetsPromise = null; });
     return previewAssetsPromise;
   }
   // 惰性构造 markdown-it(资源就绪后)
