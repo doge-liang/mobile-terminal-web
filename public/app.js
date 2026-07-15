@@ -924,7 +924,9 @@
   const fpPath = document.getElementById('fp-path');
   const fpList = document.getElementById('fp-list');
   const fpInput = document.getElementById('fp-input');
+  const fpHidden = document.getElementById('fp-hidden');
   let fpCwd = null; // 当前浏览目录（绝对路径)
+  let fpShowHidden = localStorage.getItem('fpShowHidden') === '1'; // 默认隐藏 . 开头的文件/目录
   const previewPanel = document.getElementById('preview-panel');
   const pvTitle = document.getElementById('pv-title');
   const pvBody = document.getElementById('pv-body');
@@ -945,6 +947,8 @@
   const FP_ICON_LINK = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
   const FP_ICON_FILE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>';
   const FP_ICON_DL = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
+  const FP_ICON_EYE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+  const FP_ICON_EYEOFF = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>';
 
   // 系统下载:HEAD 预检通过才导航,避免出错时把 App 跳到裸 JSON 错误页
   async function downloadFile(abs) {
@@ -1011,8 +1015,11 @@
     fpPath.textContent = data.path;
     fpPath.dataset.parent = data.parent;
     fpList.innerHTML = '';
+    // 默认藏起 . 开头的隐藏文件/配置目录;开关开启时才显示
+    const shown = fpShowHidden ? data.entries : data.entries.filter((e) => !e.name.startsWith('.'));
     if (!data.entries.length) { fpList.innerHTML = '<div class="sp-empty">（空目录）</div>'; }
-    for (const e of data.entries) {
+    else if (!shown.length) { fpList.innerHTML = '<div class="sp-empty">（仅隐藏项，点右上「显示隐藏」查看）</div>'; }
+    for (const e of shown) {
       const row = document.createElement('div');
       row.className = 'sp-row fp-row';
       const pick = document.createElement('button');
@@ -1060,6 +1067,18 @@
   pvClose.addEventListener('click', () => { previewPanel.hidden = true; });
   previewPanel.addEventListener('click', (ev) => { if (ev.target === previewPanel) previewPanel.hidden = true; });
   document.getElementById('fp-up').addEventListener('click', () => { const par = fpPath.dataset.parent; if (par) fpLoad(par); });
+  // 隐藏文件开关:图标/文案随状态翻转,偏好记本地,切换后就地刷新当前目录
+  function fpUpdateHiddenBtn() {
+    fpHidden.innerHTML = fpShowHidden ? FP_ICON_EYEOFF + '隐藏点文件' : FP_ICON_EYE + '显示隐藏';
+    fpHidden.classList.toggle('on', fpShowHidden);
+  }
+  fpUpdateHiddenBtn();
+  fpHidden.addEventListener('click', () => {
+    fpShowHidden = !fpShowHidden;
+    localStorage.setItem('fpShowHidden', fpShowHidden ? '1' : '0');
+    fpUpdateHiddenBtn();
+    if (!filePanel.hidden && fpCwd !== null) fpLoad(fpCwd);
+  });
   document.getElementById('fp-upload').addEventListener('click', () => fpInput.click());
   fpInput.addEventListener('change', async () => {
     for (const f of fpInput.files) await uploadFile(f, fpCwd); // 落到当前浏览目录
