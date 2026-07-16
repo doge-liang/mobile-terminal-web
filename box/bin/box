@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+'use strict';
+// box——agent 工作沙盒 CLI:bwrap 隔离 + restic→R2 迁移 + Nix 环境
+// 子命令实现随任务推进逐个填充;未实现的先报错占位
+const { loadConfig } = require('../lib/env');
+
+const USAGE = `用法: box <命令> [参数]
+  ls                         列出全部沙盒
+  adopt <名> [路径]           注册现有目录为沙盒(默认 /root/<名>)
+  up <名> [--node N] [--force]  拉起沙盒(自动调度节点)
+  attach <名>                接入盒内 tmux
+  exec <名> -- <命令...>      在盒内执行一次性命令
+  park <名>                  快照归档并释放本节点
+  snapshot [<名>|--active]   手动快照(--active=本机全部活跃盒并续租)
+  globals <push|pull|auto>   全局配置同步
+  prune                      按保留策略清理旧快照
+  drop <名>                  删除沙盒的 R2 数据(交互确认)
+  status                     本机视角状态`;
+
+function parseArgs(argv) {
+  const args = { _: [], flags: {}, rest: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') { args.rest = argv.slice(i + 1); break; }
+    if (a.startsWith('--')) {
+      const k = a.slice(2);
+      if (k === 'node') args.flags.node = argv[++i];
+      else args.flags[k] = true;
+    } else args._.push(a);
+  }
+  return args;
+}
+
+const notYet = (name) => () => { throw new Error(`${name}: 尚未实现`); };
+const cmds = {
+  ls: notYet('ls'), adopt: notYet('adopt'), up: notYet('up'), attach: notYet('attach'),
+  exec: notYet('exec'), park: notYet('park'), snapshot: notYet('snapshot'),
+  globals: notYet('globals'), prune: notYet('prune'), drop: notYet('drop'), status: notYet('status'),
+};
+
+const [cmd, ...rest] = process.argv.slice(2);
+if (!cmd || cmd === '--help' || cmd === '-h' || !cmds[cmd]) {
+  console.log(USAGE);
+  process.exit(cmd && cmd !== '--help' && cmd !== '-h' ? 1 : 0);
+}
+try {
+  process.exitCode = cmds[cmd](loadConfig(), parseArgs(rest)) || 0;
+} catch (e) {
+  console.error(`box: ${e.message}`);
+  process.exit(1);
+}
+
+module.exports = { parseArgs };
