@@ -9,6 +9,12 @@ function slugFor(projectPath) {
   return projectPath.replace(/[/.]/g, '-');
 }
 
+// 沙盒名合法性:仅字母数字/./_/-,且不含 `..`——防止路径穿越
+// (rclone purge boxes/<name>、systemd unit 名 boxrun-<name>、盒目录路径都直接拼接 name)
+function isValidBoxName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name) && !name.includes('..');
+}
+
 // 生成 bwrap argv(纯函数,exists 可注入以便单测)。策略见 spec「沙盒运行时模型」。
 function buildBwrapArgs(opts, exists = fs.existsSync) {
   const { name, projectPath, boxHome, runDir, nix } = opts;
@@ -43,4 +49,4 @@ function buildBwrapArgs(opts, exists = fs.existsSync) {
   return args;
 }
 
-module.exports = { slugFor, buildBwrapArgs };
+module.exports = { slugFor, buildBwrapArgs, isValidBoxName };

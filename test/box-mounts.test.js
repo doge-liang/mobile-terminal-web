@@ -1,11 +1,31 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { slugFor, buildBwrapArgs } = require('../box/lib/mounts');
+const { slugFor, buildBwrapArgs, isValidBoxName } = require('../box/lib/mounts');
 
 test('slugFor 把 / 和 . 换成 -', () => {
   assert.strictEqual(slugFor('/root/mobile-terminal-web'), '-root-mobile-terminal-web');
   assert.strictEqual(slugFor('/root/a.b'), '-root-a-b');
+});
+
+test('isValidBoxName: 字母数字/./_/- 合法', () => {
+  assert.ok(isValidBoxName('demo'));
+  assert.ok(isValidBoxName('box-01'));
+  assert.ok(isValidBoxName('a.b_c-D9'));
+});
+
+test('isValidBoxName: 含空格非法', () => {
+  assert.ok(!isValidBoxName('a b'));
+  assert.ok(!isValidBoxName(' demo'));
+});
+
+test('isValidBoxName: 含 .. 非法(路径穿越)', () => {
+  assert.ok(!isValidBoxName('a..b'));
+  assert.ok(!isValidBoxName('../etc'));
+});
+
+test('isValidBoxName: 纯 .. 非法', () => {
+  assert.ok(!isValidBoxName('..'));
 });
 
 const OPTS = {

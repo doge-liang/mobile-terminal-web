@@ -9,6 +9,7 @@ const snapMod = require('../lib/snapshot');
 const globalsMod = require('../lib/globals');
 const { evaluateLease } = require('../lib/lease');
 const { pickNode } = require('../lib/sched');
+const { isValidBoxName } = require('../lib/mounts');
 const { run, ssh } = require('../lib/sh');
 const { loadConfig, hostFor } = require('../lib/env');
 
@@ -63,6 +64,7 @@ const cmds = {
   adopt: (cfg, args) => {
     const name = args._[0];
     if (!name) throw new Error('用法: box adopt <名> [路径]');
+    if (!isValidBoxName(name)) throw new Error(`非法沙盒名 ${name}:仅允许字母数字 . _ -,不含 ..`);
     const p = args._[1] || `/root/${name}`;
     if (!fs.existsSync(p)) throw new Error(`路径不存在: ${p}`);
     if (metaMod.readMeta(cfg, name)) throw new Error(`沙盒 ${name} 已存在`);
