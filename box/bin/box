@@ -145,13 +145,19 @@ const cmds = {
   },
 
   snapshot: (cfg, args) => {
+    if (!args.flags.active && !args._[0]) {
+      throw new Error('用法: box snapshot <名> 或 box snapshot --active');
+    }
     const names = args.flags.active
       ? metaMod.listBoxNames(cfg).filter((n) => {
           const m = metaMod.readMeta(cfg, n);
           return m && m.leased_by === cfg.node;
         })
       : [args._[0]];
-    if (!names[0]) throw new Error('用法: box snapshot <名> 或 box snapshot --active');
+    if (!names.length) { // --active 且本机无活跃盒:无事可做,非错误(定时器每轮都会碰到)
+      console.log('本机无活跃盒,跳过快照');
+      return;
+    }
     for (const n of names) {
       const m = metaMod.readMeta(cfg, n);
       if (!m) throw new Error(`未知沙盒 ${n}`);
