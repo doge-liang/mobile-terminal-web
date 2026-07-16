@@ -51,3 +51,17 @@ test('nix 盒:store RO + daemon socket RW + PATH 带 nix profile', () => {
   assert.match(s, /--bind \/nix\/var\/nix\/daemon-socket \/nix\/var\/nix\/daemon-socket/);
   assert.match(s, /\/nix\/var\/nix\/profiles\/default\/bin/);
 });
+
+test('挂载顺序:私有 HOME bind 先于其内部子路径 bind(安全不变量)', () => {
+  const host = new Set(['/usr', '/etc', '/root/.claude/CLAUDE.md',
+    '/root/.claude/.credentials.json']);
+  const args = buildBwrapArgs(OPTS, existsIn(host));
+  const homeIdx = args.findIndex((a, i) =>
+    a === '--bind' && args[i + 1] === '/var/lib/box/demo/home' && args[i + 2] === '/root');
+  const subIdxs = args
+    .map((a, i) => (typeof a === 'string' && a.startsWith('/root/.') ? i : -1))
+    .filter((i) => i !== -1);
+  assert.ok(homeIdx !== -1, '必须存在私有 HOME bind');
+  assert.ok(subIdxs.length >= 2, '子路径 bind 应存在');
+  for (const i of subIdxs) assert.ok(homeIdx < i, `子路径 bind(argv[${i}])必须在私有 HOME bind 之后`);
+});
