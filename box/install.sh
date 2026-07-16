@@ -16,6 +16,7 @@ cp -r "$src/bin" "$src/lib" "$src/exclude.txt" "$src/env.example" "$src/nodes.ex
 chmod +x /opt/box/bin/box
 ln -sf /opt/box/bin/box /usr/local/bin/box
 cp "$src/tmux-inner.conf" /etc/box/tmux-inner.conf
+[ -d "$src/base-flake" ] && mkdir -p /etc/box/base-flake && cp "$src"/base-flake/flake.* /etc/box/base-flake/
 [ -d "$src/systemd" ] && cp "$src"/systemd/*.service "$src"/systemd/*.timer /etc/systemd/system/ && systemctl daemon-reload
 printf 'dev.tty.legacy_tiocsti=0\n' > /etc/sysctl.d/90-box.conf
 sysctl -p /etc/sysctl.d/90-box.conf >/dev/null
