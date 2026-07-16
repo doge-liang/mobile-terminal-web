@@ -30,6 +30,9 @@ function startSandbox(cfg, meta) {
   run('systemd-run', ['--quiet', '--collect', `--unit=${unitName(meta.name)}`,
     '-p', `MemoryMax=${meta.memory_max || cfg.memoryMax}`,
     '-p', 'MemorySwapMax=0', '-p', 'TasksMax=512',
+    // 默认 OOMPolicy=stop 会在盒内单进程被 OOM killer 杀掉后判定整个 unit failed 并停掉
+    // 全部残余进程(含 tmux server),盒需重启才能恢复;continue 让盒在内部 OOM 后继续存活自愈。
+    '-p', 'OOMPolicy=continue',
     '--', 'bwrap', ...bargs,
     // 盒内 tmux server 前台运行(-D),exit-empty off 使零会话时也不退出
     // 注:tmux manpage 明确「With -D, command may not be specified」,-D 与显式 start-server 命令冲突
@@ -73,9 +76,33 @@ function innerPid(name) {
   return kids[0];
 }
 
+// 盒 unit 的 cgroup.procs 绝对路径(宿主视角);用于把 exec 出的进程纳入盒的内存 cgroup
+function boxCgroupProcsPath(name) {
+  const rel = run('systemctl', ['show', '-p', 'ControlGroup', '--value', unitName(name)]).stdout.trim();
+  if (!rel) throw new Error(`${name}: 取不到 cgroup 路径(unit 未运行?)`);
+  return `/sys/fs/cgroup${rel}/cgroup.procs`;
+}
+
+// POSIX sh 单引号转义:仅用于拼接 shell 脚本体中的固定值(路径/pid),不用于用户 argv
+function shQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// 盒内一次性命令。两处修复:
+// 1) exec 出的进程需纳入盒 unit 的内存 cgroup,否则 MemoryMax 对其不生效(nsenter -m -p -u
+//    只切命名空间,不迁移 cgroup 成员)——做法:在宿主 namespace 里把外层 sh 自己的 pid 写入
+//    盒 cgroup.procs,再 exec 进 nsenter;exec 不改变 cgroup 成员关系,故 nsenter 及其整条
+//    exec 链(含最终 argv)都保持在盒 cgroup 内。写入失败即 fail-closed(不静默跑到盒外)。
+// 2) 去掉 nsenter --wd=projectPath:该选项与盒内 `--bind projectPath projectPath` 自绑定挂载
+//    交互会破坏 getcwd() 路径重建(裸 process.cwd() 调用如 `claude --version` 会踩),改为进入
+//    命名空间后先显式 `cd` 再 exec 目标命令,规避裸 getcwd() 依赖。
 function execIn(name, meta, argv) {
-  return run('nsenter', ['-t', innerPid(name), '-m', '-p', '-u', `--wd=${meta.path}`,
-    '--', 'env', 'HOME=/root', 'TMPDIR=/tmp', ...argv], { inherit: true, check: false }).status;
+  const pid = innerPid(name);
+  const procsPath = boxCgroupProcsPath(name);
+  const innerScript = `cd ${shQuote(meta.path)} && exec env HOME=/root TMPDIR=/tmp "$@"`;
+  const outerScript = `echo $$ > ${shQuote(procsPath)} || exit 97; ` +
+    `exec nsenter -t ${pid} -m -p -u -- sh -c ${shQuote(innerScript)} sh "$@"`;
+  return run('sh', ['-c', outerScript, 'sh', ...argv], { inherit: true, check: false }).status;
 }
 
 module.exports = { unitName, sockPath, boxHome, isRunning, startSandbox, stopSandbox, attach, execIn, shellCommand };
