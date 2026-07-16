@@ -185,6 +185,7 @@ const cmds = {
 
   drop: (cfg, args) => {
     const name = args._[0];
+    if (name && !isValidBoxName(name)) throw new Error(`非法沙盒名 ${name}:仅允许字母数字 . _ -,不含 ..`);
     const meta = mustMeta(cfg, name);
     if (meta.leased_by) throw new Error(`沙盒活跃于 ${meta.leased_by},先 park 再 drop`);
     const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
