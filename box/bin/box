@@ -191,11 +191,23 @@ const cmds = {
     rl.question(`确认删除沙盒 ${name} 的全部 R2 数据?输入 yes: `, (ans) => {
       rl.close();
       if (ans.trim() !== 'yes') return void console.log('已取消');
-      const snaps = JSON.parse(run('restic', ['snapshots', '--tag', `box:${name}`, '--json'],
-        { env: cfg.resticEnv, check: false }).stdout || '[]');
-      if (snaps.length) run('restic', ['forget', ...snaps.map((s) => s.id)], { env: cfg.resticEnv, inherit: true });
-      run('rclone', ['purge', `BOXR2:${cfg.bucket}/boxes/${name}`], { env: cfg.rcloneEnv });
-      console.log(`${name} 已删除`);
+      try {
+        const snapsR = run('restic', ['snapshots', '--tag', `box:${name}`, '--json'],
+          { env: cfg.resticEnv, check: false });
+        if (snapsR.status !== 0) {
+          const tail = (snapsR.stderr || '').trim().split('\n').pop();
+          throw new Error(`列出待删快照失败: ${tail || 'unknown'}`);
+        }
+        // 列举失败必须在这里中止,不能吞成 []——否则下面 forget 会被跳过但 rclone purge
+        // 仍会执行,meta 已删却在 R2 留下孤儿快照(restic 索引里还挂着,永不会被 prune 回收)。
+        const snaps = JSON.parse(snapsR.stdout || '[]');
+        if (snaps.length) run('restic', ['forget', ...snaps.map((s) => s.id)], { env: cfg.resticEnv, inherit: true });
+        run('rclone', ['purge', `BOXR2:${cfg.bucket}/boxes/${name}`], { env: cfg.rcloneEnv });
+        console.log(`${name} 已删除`);
+      } catch (e) {
+        console.error(`box: ${e.message}`);
+        process.exitCode = 1;
+      }
     });
   },
 
