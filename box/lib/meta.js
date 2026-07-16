@@ -17,7 +17,11 @@ function readMeta(cfg, name) {
     if (r.status === 3 || r.status === 4 || /not found/i.test(r.stderr)) return null;
     throw new Error(`读取 meta 失败: ${r.stderr.trim().split('\n').pop()}`);
   }
-  return JSON.parse(r.stdout);
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    throw new Error(`meta.json 内容非法: ${r.stdout.slice(0, 80)}`);
+  }
 }
 
 function writeMeta(cfg, name, meta) {

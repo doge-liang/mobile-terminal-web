@@ -27,6 +27,11 @@ test('collectSessionSlices: codex 按首行 cwd、grok 按目录名解码', () =
   fs.writeFileSync(path.join(cx, 'miss.jsonl'),
     JSON.stringify({ type: 'session_meta', payload: { cwd: '/root/other' } }) + '\n');
   fs.writeFileSync(path.join(cx, 'garbage.jsonl'), 'not json\n');
+  fs.writeFileSync(path.join(cx, 'bighead.jsonl'),
+    JSON.stringify({
+      type: 'session_meta',
+      payload: { cwd: '/root/demo', base_instructions: 'x'.repeat(10240) },
+    }) + '\n{"y":2}\n');
   const gk = path.join(tmp, 'grok');
   fs.mkdirSync(path.join(gk, encodeURIComponent('/root/demo')), { recursive: true });
   fs.mkdirSync(path.join(gk, encodeURIComponent('/root/other')), { recursive: true });
@@ -34,6 +39,7 @@ test('collectSessionSlices: codex 按首行 cwd、grok 按目录名解码', () =
   const out = collectSessionSlices('/root/demo', [path.join(tmp, 'codex'), gk]);
   assert.deepStrictEqual(out.sort(), [
     path.join(cx, 'hit.jsonl'),
+    path.join(cx, 'bighead.jsonl'),
     path.join(gk, encodeURIComponent('/root/demo')),
   ].sort());
   fs.rmSync(tmp, { recursive: true, force: true });
