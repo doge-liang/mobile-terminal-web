@@ -2,16 +2,15 @@
 'use strict';
 // box——agent 工作沙盒 CLI:bwrap 隔离 + restic→R2 迁移 + Nix 环境
 // 子命令实现随任务推进逐个填充;未实现的先报错占位
-const { loadConfig } = require('../lib/env');
-const runtime = require('../lib/runtime');
-
-// Task 7 前的临时形态:meta 从 /var/lib/box/<名>/meta.json 读(startSandbox 的调用方负责写入)
 const fs = require('fs');
-function localMeta(name) {
-  const p = `/var/lib/box/${name}/meta.json`;
-  if (!fs.existsSync(p)) throw new Error(`本机无沙盒 ${name} 的记录(${p})`);
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
-}
+const metaMod = require('../lib/meta');
+const runtime = require('../lib/runtime');
+const snapMod = require('../lib/snapshot');
+const globalsMod = require('../lib/globals');
+const { evaluateLease } = require('../lib/lease');
+const { pickNode } = require('../lib/sched');
+const { run, ssh } = require('../lib/sh');
+const { loadConfig, hostFor } = require('../lib/env');
 
 const USAGE = `用法: box <命令> [参数]
   ls                         列出全部沙盒
@@ -40,24 +39,112 @@ function parseArgs(argv) {
   return args;
 }
 
+function probeAll(cfg) {
+  return cfg.nodes.map((n) => {
+    try {
+      const out = n.host === 'local'
+        ? fs.readFileSync('/proc/meminfo', 'utf8')
+        : ssh(n.host, 'cat /proc/meminfo', { timeoutMs: 3000 }).stdout;
+      const m = /MemAvailable:\s+(\d+)/.exec(out);
+      return { name: n.name, memKb: m ? Number(m[1]) : null };
+    } catch { return { name: n.name, memKb: null }; }
+  });
+}
+
+function mustMeta(cfg, name) {
+  if (!name) throw new Error('缺少沙盒名');
+  const m = metaMod.readMeta(cfg, name);
+  if (!m) throw new Error(`未知沙盒 ${name}(先 box adopt)`);
+  return m;
+}
+
 const notYet = (name) => () => { throw new Error(`${name}: 尚未实现`); };
 const cmds = {
-  ls: notYet('ls'), adopt: notYet('adopt'), up: notYet('up'),
+  adopt: (cfg, args) => {
+    const name = args._[0];
+    if (!name) throw new Error('用法: box adopt <名> [路径]');
+    const p = args._[1] || `/root/${name}`;
+    if (!fs.existsSync(p)) throw new Error(`路径不存在: ${p}`);
+    if (metaMod.readMeta(cfg, name)) throw new Error(`沙盒 ${name} 已存在`);
+    const meta = metaMod.newMeta({ name, path: p, node: cfg.node });
+    if (fs.existsSync(`${p}/.auth-secret`)) {
+      meta.pin = cfg.node;
+      console.error(`警告: 检测到 .auth-secret——已排除快照,并 pin 到 ${cfg.node}(防止调度到他机覆盖部署)`);
+    }
+    snapMod.backupBox(cfg, meta);
+    meta.last_snapshot = metaMod.iso();
+    metaMod.writeMeta(cfg, name, meta);
+    console.log(`已收养 ${name}(${p}),租约在 ${cfg.node};box attach ${name} 进入沙盒`);
+  },
+
+  up: (cfg, args) => {
+    const name = args._[0];
+    const meta = mustMeta(cfg, name);
+    if (!args.flags.local) {
+      const picked = args.flags.node ? { name: args.flags.node }
+        : pickNode(probeAll(cfg), { pin: meta.pin, self: cfg.node });
+      if (picked.warning) console.error(`警告: ${picked.warning}`);
+      if (picked.name !== cfg.node) {
+        const host = hostFor(cfg, picked.name);
+        console.log(`调度到 ${picked.name},远程拉起…`);
+        ssh(host, `box up ${name} --local${args.flags.force ? ' --force' : ''}`, { inherit: true, timeoutMs: 600000 });
+        console.log(`完成。接入: ssh -t ${host} box attach ${name},或打开该节点的 term 页`);
+        return;
+      }
+    }
+    const lease = evaluateLease(meta, cfg.node, Date.now(), !!args.flags.force);
+    if (!lease.ok) throw new Error(lease.reason);
+    if (lease.reason) console.error(`注意: ${lease.reason}`);
+    const freshHere = meta.leased_by === cfg.node && fs.existsSync(meta.path);
+    if (!freshHere) snapMod.restoreBox(cfg, meta); // 母鸡重启场景:租约在本机+文件在盘=跳过 restore
+    meta.leased_by = cfg.node;
+    meta.lease_ts = metaMod.iso();
+    metaMod.writeMeta(cfg, name, meta);
+    runtime.startSandbox(cfg, meta);
+    console.log(`${name} 已在 ${cfg.node} 拉起;box attach ${name} 接入`);
+  },
+
+  park: (cfg, args) => {
+    const name = args._[0];
+    const meta = mustMeta(cfg, name);
+    if (meta.leased_by !== cfg.node) throw new Error(`租约不在本机(${meta.leased_by || '已归档'})`);
+    snapMod.backupBox(cfg, meta);
+    meta.last_snapshot = metaMod.iso();
+    meta.leased_by = null;
+    meta.lease_ts = null;
+    metaMod.writeMeta(cfg, name, meta);
+    runtime.stopSandbox(name);
+    console.log(`${name} 已归档(快照上传、租约释放、沙盒停止)`);
+  },
+
+  ls: (cfg) => {
+    const names = metaMod.listBoxNames(cfg);
+    if (!names.length) return void console.log('(无沙盒;box adopt 开始)');
+    for (const n of names) {
+      const m = metaMod.readMeta(cfg, n);
+      if (!m) continue;
+      const state = m.leased_by ? `active@${m.leased_by}` : 'parked';
+      const local = m.leased_by === cfg.node && runtime.isRunning(n) ? ' [运行中]' : '';
+      const pin = m.pin ? ` pin=${m.pin}` : '';
+      console.log(`${n.padEnd(24)} ${state}${local}${pin}  快照:${m.last_snapshot || '无'}`);
+    }
+  },
+
   attach: (cfg, args) => {
-    const name = args._[0]; if (!name) throw new Error('用法: box attach <名>');
-    const meta = localMeta(name);
+    const name = args._[0];
+    const meta = mustMeta(cfg, name);
+    if (meta.leased_by !== cfg.node) throw new Error(`租约在 ${meta.leased_by || '无'}——先 box up ${name}`);
     if (!runtime.isRunning(name)) runtime.startSandbox(cfg, meta);
     return runtime.attach(name, meta);
   },
+
   exec: (cfg, args) => {
     const name = args._[0];
     if (!name || !args.rest.length) throw new Error('用法: box exec <名> -- <命令...>');
-    return runtime.execIn(name, localMeta(name), args.rest);
+    return runtime.execIn(name, mustMeta(cfg, name), args.rest);
   },
-  park: notYet('park'),
+
   snapshot: (cfg, args) => {
-    const metaMod = require('../lib/meta');
-    const { backupBox } = require('../lib/snapshot');
     const names = args.flags.active
       ? metaMod.listBoxNames(cfg).filter((n) => {
           const m = metaMod.readMeta(cfg, n);
@@ -68,14 +155,43 @@ const cmds = {
     for (const n of names) {
       const m = metaMod.readMeta(cfg, n);
       if (!m) throw new Error(`未知沙盒 ${n}`);
-      backupBox(cfg, m);
+      snapMod.backupBox(cfg, m);
       m.last_snapshot = metaMod.iso();
       if (m.leased_by === cfg.node) m.lease_ts = metaMod.iso(); // 快照即续租
       metaMod.writeMeta(cfg, n, m);
       console.log(`已快照 ${n}`);
     }
   },
-  globals: notYet('globals'), prune: notYet('prune'), drop: notYet('drop'), status: notYet('status'),
+
+  globals: (cfg, args) => {
+    const sub = args._[0];
+    if (!['push', 'pull', 'auto'].includes(sub)) throw new Error('用法: box globals <push|pull|auto>');
+    globalsMod[sub](cfg);
+    console.log(`globals ${sub} 完成`);
+  },
+
+  prune: (cfg) => {
+    run('restic', ['forget', '--keep-hourly', '24', '--keep-daily', '7', '--keep-weekly', '4', '--prune'],
+      { env: cfg.resticEnv, inherit: true });
+  },
+
+  drop: (cfg, args) => {
+    const name = args._[0];
+    const meta = mustMeta(cfg, name);
+    if (meta.leased_by) throw new Error(`沙盒活跃于 ${meta.leased_by},先 park 再 drop`);
+    const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`确认删除沙盒 ${name} 的全部 R2 数据?输入 yes: `, (ans) => {
+      rl.close();
+      if (ans.trim() !== 'yes') return void console.log('已取消');
+      const snaps = JSON.parse(run('restic', ['snapshots', '--tag', `box:${name}`, '--json'],
+        { env: cfg.resticEnv, check: false }).stdout || '[]');
+      if (snaps.length) run('restic', ['forget', ...snaps.map((s) => s.id)], { env: cfg.resticEnv, inherit: true });
+      run('rclone', ['purge', `BOXR2:${cfg.bucket}/boxes/${name}`], { env: cfg.rcloneEnv });
+      console.log(`${name} 已删除`);
+    });
+  },
+
+  status: notYet('status'),
 };
 
 const [cmd, ...rest] = process.argv.slice(2);
