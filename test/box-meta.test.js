@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { interpretMetaCat } = require('../box/lib/meta');
+const { interpretMetaCat, interpretListResult } = require('../box/lib/meta');
 
 test('status 0 + 空 stdout: 判定为不存在(R2 真机回归)', () => {
   assert.strictEqual(interpretMetaCat({ status: 0, stdout: '', stderr: '' }), null);
@@ -29,5 +29,23 @@ test('status 3: 判定为不存在;status 1 + stderr: 抛出"读取 meta 失败"
   assert.throws(
     () => interpretMetaCat({ status: 1, stdout: '', stderr: 'boom' }),
     /读取 meta 失败/,
+  );
+});
+
+test('interpretListResult: status0+空输出→[](真空,而非 R2 不可达)', () => {
+  assert.deepStrictEqual(interpretListResult({ status: 0, stdout: '', stderr: '' }), []);
+});
+
+test('interpretListResult: status0+多行 dirs 输出→去掉尾斜杠的名字数组', () => {
+  assert.deepStrictEqual(
+    interpretListResult({ status: 0, stdout: 'a/\nb/\n', stderr: '' }),
+    ['a', 'b'],
+  );
+});
+
+test('interpretListResult: status1+stderr → 抛出"列出沙盒失败"(不可吞成空列表)', () => {
+  assert.throws(
+    () => interpretListResult({ status: 1, stdout: '', stderr: 'boom' }),
+    /列出沙盒失败/,
   );
 });
