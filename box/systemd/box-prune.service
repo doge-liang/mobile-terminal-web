@@ -1,0 +1,6 @@
+[Unit]
+Description=box weekly restic prune
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/box prune

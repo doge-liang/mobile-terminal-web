@@ -1,0 +1,7 @@
+[Unit]
+Description=box hourly snapshot + globals sync
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/box snapshot --active
+ExecStart=/usr/local/bin/box globals auto
