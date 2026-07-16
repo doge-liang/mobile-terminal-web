@@ -11,17 +11,24 @@ function newMeta({ name, path, node }) {
   };
 }
 
+function interpretMetaCat({ status, stdout, stderr }) {
+  if (status !== 0) {
+    if (status === 3 || status === 4 || /not found/i.test(stderr)) return null;
+    throw new Error(`读取 meta 失败: ${stderr.trim().split('\n').pop()}`);
+  }
+  // Cloudflare R2 上 `rclone cat` 对不存在的对象返回 exit=0 且 stdout 为空
+  // (不是 rclone 对本地/多数后端假设的 status 3/4),需在此单独判定为"不存在"。
+  if (!stdout || !stdout.trim()) return null;
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`meta.json 内容非法: ${stdout.slice(0, 80)}`);
+  }
+}
+
 function readMeta(cfg, name) {
   const r = run('rclone', ['cat', metaPath(cfg, name)], { env: cfg.rcloneEnv, check: false });
-  if (r.status !== 0) {
-    if (r.status === 3 || r.status === 4 || /not found/i.test(r.stderr)) return null;
-    throw new Error(`读取 meta 失败: ${r.stderr.trim().split('\n').pop()}`);
-  }
-  try {
-    return JSON.parse(r.stdout);
-  } catch {
-    throw new Error(`meta.json 内容非法: ${r.stdout.slice(0, 80)}`);
-  }
+  return interpretMetaCat(r);
 }
 
 function writeMeta(cfg, name, meta) {
@@ -36,4 +43,4 @@ function listBoxNames(cfg) {
   return r.stdout.split('\n').filter(Boolean).map((s) => s.replace(/\/$/, ''));
 }
 
-module.exports = { newMeta, readMeta, writeMeta, listBoxNames, iso };
+module.exports = { newMeta, readMeta, writeMeta, listBoxNames, iso, interpretMetaCat };
