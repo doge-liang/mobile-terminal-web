@@ -32,6 +32,12 @@ test('collectSessionSlices: codex 按首行 cwd、grok 按目录名解码', () =
       type: 'session_meta',
       payload: { cwd: '/root/demo', base_instructions: 'x'.repeat(10240) },
     }) + '\n{"y":2}\n');
+  // 首行约 100KB,跨多个 firstLine 的 64KB 读取块(覆盖多 chunk 拼接路径,而非单 chunk 内命中换行)
+  fs.writeFileSync(path.join(cx, 'reallybighead.jsonl'),
+    JSON.stringify({
+      type: 'session_meta',
+      payload: { cwd: '/root/demo', base_instructions: 'z'.repeat(100 * 1024) },
+    }) + '\n{"y":3}\n');
   const gk = path.join(tmp, 'grok');
   fs.mkdirSync(path.join(gk, encodeURIComponent('/root/demo')), { recursive: true });
   fs.mkdirSync(path.join(gk, encodeURIComponent('/root/other')), { recursive: true });
@@ -40,6 +46,7 @@ test('collectSessionSlices: codex 按首行 cwd、grok 按目录名解码', () =
   assert.deepStrictEqual(out.sort(), [
     path.join(cx, 'hit.jsonl'),
     path.join(cx, 'bighead.jsonl'),
+    path.join(cx, 'reallybighead.jsonl'),
     path.join(gk, encodeURIComponent('/root/demo')),
   ].sort());
   fs.rmSync(tmp, { recursive: true, force: true });
