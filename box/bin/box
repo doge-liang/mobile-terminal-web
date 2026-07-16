@@ -54,7 +54,27 @@ const cmds = {
     if (!name || !args.rest.length) throw new Error('用法: box exec <名> -- <命令...>');
     return runtime.execIn(name, localMeta(name), args.rest);
   },
-  park: notYet('park'), snapshot: notYet('snapshot'),
+  park: notYet('park'),
+  snapshot: (cfg, args) => {
+    const metaMod = require('../lib/meta');
+    const { backupBox } = require('../lib/snapshot');
+    const names = args.flags.active
+      ? metaMod.listBoxNames(cfg).filter((n) => {
+          const m = metaMod.readMeta(cfg, n);
+          return m && m.leased_by === cfg.node;
+        })
+      : [args._[0]];
+    if (!names[0]) throw new Error('用法: box snapshot <名> 或 box snapshot --active');
+    for (const n of names) {
+      const m = metaMod.readMeta(cfg, n);
+      if (!m) throw new Error(`未知沙盒 ${n}`);
+      backupBox(cfg, m);
+      m.last_snapshot = metaMod.iso();
+      if (m.leased_by === cfg.node) m.lease_ts = metaMod.iso(); // 快照即续租
+      metaMod.writeMeta(cfg, n, m);
+      console.log(`已快照 ${n}`);
+    }
+  },
   globals: notYet('globals'), prune: notYet('prune'), drop: notYet('drop'), status: notYet('status'),
 };
 
