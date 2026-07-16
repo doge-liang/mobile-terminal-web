@@ -57,7 +57,7 @@ function stopSandbox(name) {
 function shellCommand(meta) {
   if (!meta.nix) return null;
   const ref = fs.existsSync(`${meta.path}/flake.nix`) ? meta.path : '/etc/box/base-flake';
-  return `nix develop ${ref} -c $SHELL`;
+  return `nix develop ${shQuote(ref)} -c "$SHELL"`;
 }
 
 function attach(name, meta) {
