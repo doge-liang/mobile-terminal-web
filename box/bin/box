@@ -191,7 +191,19 @@ const cmds = {
     });
   },
 
-  status: notYet('status'),
+  status: (cfg) => {
+    const { run } = require('../lib/sh');
+    console.log(`节点: ${cfg.node}(globals ${cfg.globalsRole})  内存默认上限: ${cfg.memoryMax}`);
+    const r2 = run('rclone', ['lsd', `BOXR2:${cfg.bucket}`], { env: cfg.rcloneEnv, check: false, timeoutMs: 10000 });
+    console.log(`R2 连通: ${r2.status === 0 ? 'ok' : '失败 ' + r2.stderr.trim().split('\n').pop()}`);
+    const snaps = run('restic', ['snapshots', '--json'], { env: cfg.resticEnv, check: false, timeoutMs: 30000 });
+    console.log(`restic 快照数: ${snaps.status === 0 ? JSON.parse(snaps.stdout || '[]').length : '不可达'}`);
+    const timer = run('systemctl', ['is-active', 'box-snapshot.timer'], { check: false });
+    console.log(`定时快照: ${timer.stdout.trim() || 'unknown'}`);
+    const units = run('systemctl', ['list-units', '--plain', '--no-legend', 'boxrun-*.service'], { check: false });
+    const act = units.stdout.trim();
+    console.log(`本机活跃盒:\n${act || '  (无)'}`);
+  },
 };
 
 const [cmd, ...rest] = process.argv.slice(2);
