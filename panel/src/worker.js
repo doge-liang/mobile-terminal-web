@@ -93,7 +93,7 @@ export function mergeBoxLs(results) {
   const byName = new Map();
   for (const r of results) {
     if (!r.ok) continue;
-    for (const b of r.data.boxes) {
+    for (const b of r.data.boxes || []) {
       const cur = byName.get(b.name) || { ...b, running: false, runningOn: null, mem: null };
       if (b.running) {
         cur.running = true;
@@ -130,7 +130,7 @@ async function postNodeBox(node, op, name, cfg) {
       method: "POST",
       headers: { ...svcHeaders(cfg), "content-type": "application/json" },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(600000),
+      signal: AbortSignal.timeout(630000),
     });
     if (!r.ok) return { ok: false, error: "节点 HTTP " + r.status + (r.status === 403 ? "(服务令牌?)" : "") };
     const body = JSON.parse(await r.text());  // 节点用前导空白心跳,JSON.parse 容忍
@@ -406,7 +406,7 @@ function renderBoxes(d){
     sel.disabled = !!busy;
     d.nodes.filter(function(n){ return n.online && n.boxNode; }).forEach(function(n){
       var o = document.createElement("option"); o.value = n.id; o.textContent = "加载到 " + n.name;
-      if (b.runningOn && n.boxNode === b.runningOn) o.selected = true;
+      if (b.runningOn ? n.boxNode === b.runningOn : (!b.running && b.pin && n.boxNode === b.pin)) o.selected = true;
       sel.append(o);
     });
     var loadBtn = document.createElement("button"); loadBtn.className = "bload";
@@ -414,6 +414,10 @@ function renderBoxes(d){
     loadBtn.disabled = !!busy;
     loadBtn.onclick = function(){
       if (!sel.value) return toast("无在线节点");
+      var chosen = d.nodes.find(function(n){ return n.id === sel.value; });
+      if (b.pin && (!chosen || chosen.boxNode !== b.pin)){
+        if (!confirm("盒 " + b.name + " 固定在 " + nodeLabel(b.pin) + ",确定加载到其它节点?(可能丢失未快照的凭证)")) return;
+      }
       var w = window.open("", "_blank");  // 先同步开空标签,避免 await 后被弹窗拦截
       inflight[b.name] = "迁移中…";
       loadBtn.textContent = "迁移中…";

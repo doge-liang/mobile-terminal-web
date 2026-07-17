@@ -143,6 +143,7 @@ async function resolveBoxAttach(name) {
   if (!fs.existsSync(boxSockPath(name))) throw new Error('盒未在本机运行,请从面板重新加载');
   const b = (await boxLs()).find((x) => x.name === name);
   if (!b) throw new Error(`未知盒 ${name}`);
+  if (b.leased_by !== BOX_NODE || !b.running) throw new Error('盒未在本机运行,请从面板重新加载');
   return { name, path: b.path, nix: !!b.nix };
 }
 
