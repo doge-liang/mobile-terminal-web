@@ -918,7 +918,7 @@ wss.on('connection', async (ws, req, auth) => {
     try { box = await resolveBoxAttach(boxParam); }
     catch (e) {
       ws.send(Buffer.from(`\r\n\x1b[31m[${e.message}]\x1b[0m\r\n`, 'utf8'));
-      return ws.close();
+      return ws.close(4008, 'box attach failed');
     }
   }
 

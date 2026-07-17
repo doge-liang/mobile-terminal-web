@@ -124,6 +124,7 @@
       const ws = new WebSocket(`${proto}://${location.host}/ws?session=${sessionName}&cols=${term.cols}&rows=${term.rows}${boxName ? `&box=${encodeURIComponent(boxName)}` : ''}`);
       ws.binaryType = 'arraybuffer';
       let opened = false;
+      let pinger = null; // hoisted out of onopen so onclose can always clear it, not just handle.close()
       const probe = setTimeout(() => { if (!opened) { ws.close(); resolve(null); } }, WS_PROBE_MS);
 
       let lastAlive = Date.now();
@@ -131,7 +132,7 @@
         opened = true;
         lastAlive = Date.now();
         clearTimeout(probe);
-        const pinger = setInterval(() => {
+        pinger = setInterval(() => {
           if (ws.readyState !== WebSocket.OPEN) return;
           ws.send(JSON.stringify({ t: 'ping', ts: Date.now() }));
           if (Date.now() - lastAlive > WS_STALE_MS) ws.close(); // blackholed: force reconnect
@@ -157,8 +158,12 @@
           if (m.t === 'pong') { noteRtt(Date.now() - m.ts); setStatus(true, '已连接 (WS)'); }
         } catch { /* ignore */ }
       };
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         clearTimeout(probe);
+        clearInterval(pinger);
+        // 4008 = server rejected ?box= attach (resolveBoxAttach failed): fatal for
+        // this tab — the box just isn't on this node, so no auto-retry/downgrade
+        if (ev.code === 4008) { hooks.onFatal(); resolve(null); return; }
         if (!opened) resolve(null);
         else hooks.onDown();
       };
@@ -178,6 +183,7 @@
       if (r.status === 409) {
         const d = await r.json().catch(() => ({}));
         hooks.onData(new TextEncoder().encode('\r\n\x1b[31m[' + (d.error || '盒不可用') + ']\x1b[0m\r\n'));
+        hooks.onFatal(); // box unavailable: same fatal contract as the WS 4008 path — no retry loop
         return null;
       }
       if (!r.ok) return null;
@@ -301,9 +307,12 @@
   let transport = null;
   let retryMs = 500;
   let connecting = false;
+  // set once by a fatal ?box= failure (WS close 4008 / HTTP 409): the box just
+  // isn't on this node, so this tab stops trying — no auto-retry, no downgrade
+  let boxFatal = false;
 
   async function connect() {
-    if (connecting) return;
+    if (connecting || boxFatal) return;
     connecting = true;
     setStatus(false, '连接中…');
     fit.fit();
@@ -318,13 +327,19 @@
         setTimeout(connect, retryMs);
         retryMs = Math.min(retryMs * 2, 8000);
       },
+      onFatal: () => {
+        transport = null;
+        boxFatal = true;
+        setStatus(false, '盒不可用——请从面板重新加载');
+      },
     };
 
     transport = await tryWebSocket(hooks);
-    if (!transport) transport = await tryHttp(hooks, true);
+    if (!transport && !boxFatal) transport = await tryHttp(hooks, true);
     connecting = false;
 
     if (!transport) {
+      if (boxFatal) return; // onFatal already set status; do not enter the retry loop
       setStatus(false, '连接失败，重试中…');
       setTimeout(connect, retryMs);
       retryMs = Math.min(retryMs * 2, 8000);
