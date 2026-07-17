@@ -275,6 +275,53 @@ function json(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// --- 盒控制面:面板 Worker 经服务令牌调用;全部 execFile 固定 argv,零 shell ---
+const AG_BOX = process.env.AG_BOX || 'ag-box';
+const BOX_ENV_PATH = '/root/.config/box/env';
+let BOX_NODE = null;  // 本机 ag-box 身份;null = 本节点未配 ag-box,box 端点返回 501
+try { BOX_NODE = parseBoxNode(fs.readFileSync(BOX_ENV_PATH, 'utf8')); } catch { /* 未装 box 的节点 */ }
+
+function runAgBox(args, { input, timeoutMs = 600000 } = {}) {
+  return new Promise((resolve) => {
+    const child = execFile(AG_BOX, args,
+      { timeout: timeoutMs, maxBuffer: 8 << 20, env: { ...process.env, HOME: process.env.HOME || '/root' } },
+      (err, stdout, stderr) => resolve({
+        status: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        stdout: stdout || '', stderr: stderr || '',
+      }));
+    if (input) child.stdin.write(input);
+    child.stdin.end();
+  });
+}
+
+const agBoxErr = (r, op) => (r.stderr.trim().split('\n').pop() || `ag-box ${op} 退出码 ${r.status}`);
+
+// ls 结果 4s TTL 缓存:ag-box ls 每次 rclone lsf + 每盒 rclone cat 全打 R2,
+// 面板 10s 轮询下不缓存会造成持续进程与 R2 请求 churn;park/up/drop 后主动失效
+let boxLsCache = { at: 0, promise: null };
+function boxLs() {
+  if (boxLsCache.promise && Date.now() - boxLsCache.at < 4000) return boxLsCache.promise;
+  const promise = runAgBox(['ls', '--json'], { timeoutMs: 60000 }).then((r) => {
+    if (r.status !== 0) throw new Error(`ag-box ls 失败: ${agBoxErr(r, 'ls')}`);
+    return JSON.parse(r.stdout);
+  });
+  boxLsCache = { at: Date.now(), promise };
+  promise.catch(() => { boxLsCache.at = 0; });  // 失败不缓存
+  return promise;
+}
+const invalidateBoxLs = () => { boxLsCache.at = 0; };
+
+// 长操作(park 快照上传/up restore)可能超 Cloudflare ~100s 无字节超时;
+// 先发 200 头,期间周期写空格(JSON.parse 容忍前导空白),结束写 JSON 体。
+// 因头已发出,错误也走 200 + {ok:false,error},调用方看 body.ok。
+function jsonHeartbeat(res, work) {
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  const hb = setInterval(() => res.write(' '), 20000);
+  work.then(
+    (body) => { clearInterval(hb); res.end(JSON.stringify(body)); },
+    (e) => { clearInterval(hb); res.end(JSON.stringify({ ok: false, error: e.message })); });
+}
+
 // --- static files ---
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -385,6 +432,42 @@ const requestHandler = async (req, res) => {
     if (!serviceAuthAllowed(auth.cn, url.pathname, BOX_CTRL_CN)) {
       console.log(`[403] service-token cn=${auth.cn} denied for ${url.pathname}`);
       return json(res, 403, { error: 'service token restricted to /t/box/*' });
+    }
+
+    if (url.pathname.startsWith('/t/box/')) {
+      if (!BOX_NODE) return json(res, 501, { error: '本节点未配置 ag-box' });
+
+      if (req.method === 'GET' && url.pathname === '/t/box/ls') {
+        try {
+          const boxes = await boxLs();
+          const mem = {};
+          for (const b of boxes) {
+            if (!b.running) continue;
+            const m = readBoxMem(b.name, (p) => fs.readFileSync(p, 'utf8'));
+            if (m != null) mem[b.name] = m;
+          }
+          return json(res, 200, { node: BOX_NODE, boxes, mem });
+        } catch (e) {
+          return json(res, 502, { error: e.message });
+        }
+      }
+
+      const ops = { '/t/box/park': ['park'], '/t/box/up': ['up'], '/t/box/drop': ['drop'] };
+      if (req.method === 'POST' && ops[url.pathname]) {
+        let body = {};
+        try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!isValidBoxName(body.name)) return json(res, 400, { error: '非法盒名' });
+        const op = ops[url.pathname][0];
+        const argv = op === 'up' ? ['up', body.name, '--local'] : [op, body.name];
+        const input = op === 'drop' ? 'yes\n' : undefined;  // drop 是 readline 交互确认,喂 yes
+        console.log(`[box] ${auth.cn || auth.email} ${op} ${body.name}`);
+        invalidateBoxLs();
+        return jsonHeartbeat(res, runAgBox(argv, { input }).then((r) => {
+          invalidateBoxLs();
+          return r.status === 0 ? { ok: true } : { ok: false, error: agBoxErr(r, op) };
+        }));
+      }
+      return json(res, 404, { error: 'unknown box endpoint' });
     }
 
     if (req.method === 'GET' && url.pathname === '/t/sessions') {

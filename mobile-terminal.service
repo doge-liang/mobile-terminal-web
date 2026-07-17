@@ -6,6 +6,7 @@ After=network.target wg-quick@wg1.service
 Type=simple
 WorkingDirectory=/root/mobile-terminal-web
 EnvironmentFile=-/etc/default/mobile-terminal
+Environment=HOME=/root
 ExecStart=/usr/bin/node /root/mobile-terminal-web/server.js
 Restart=always
 RestartSec=3
