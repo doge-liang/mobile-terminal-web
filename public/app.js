@@ -13,11 +13,18 @@
   let sessionName = sanitizeName(
     params.get('session') || sessionStorage.getItem('session') ||
     localStorage.getItem('session') || 'mobile') || 'mobile';
+  const boxName = params.get('box') || '';
   const isPhone = Math.min(window.screen.width, window.screen.height) < 500;
   let fontSize = parseInt(localStorage.getItem('fontSize'), 10) || (isPhone ? 12 : 15);
 
   const statusEl = document.getElementById('status');
   const sessionEl = document.getElementById('session-name');
+  const boxBanner = document.getElementById('box-banner');
+  if (boxName) {
+    boxBanner.hidden = false;
+    boxBanner.textContent = `● 盒内:${boxName}`;
+    document.title = `[盒] ${boxName}`;
+  }
 
   const term = new Terminal({
     fontSize,
@@ -114,7 +121,7 @@
   function tryWebSocket(hooks) {
     return new Promise((resolve) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${proto}://${location.host}/ws?session=${sessionName}&cols=${term.cols}&rows=${term.rows}`);
+      const ws = new WebSocket(`${proto}://${location.host}/ws?session=${sessionName}&cols=${term.cols}&rows=${term.rows}${boxName ? `&box=${encodeURIComponent(boxName)}` : ''}`);
       ws.binaryType = 'arraybuffer';
       let opened = false;
       const probe = setTimeout(() => { if (!opened) { ws.close(); resolve(null); } }, WS_PROBE_MS);
@@ -166,8 +173,13 @@
       const r = await fetchT('/t/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: sessionName, cols: term.cols, rows: term.rows }),
+        body: JSON.stringify({ session: sessionName, cols: term.cols, rows: term.rows, box: boxName || undefined }),
       }, 8000);
+      if (r.status === 409) {
+        const d = await r.json().catch(() => ({}));
+        hooks.onData(new TextEncoder().encode('\r\n\x1b[31m[' + (d.error || '盒不可用') + ']\x1b[0m\r\n'));
+        return null;
+      }
       if (!r.ok) return null;
       noteRtt(Date.now() - t0);
       sid = (await r.json()).sid;

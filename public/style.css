@@ -428,3 +428,4 @@ html, body {
 .markdown-body { --base-size-16: 15px; font-size: 15px; }
 .markdown-body pre { overflow-x: auto; }   /* 窄屏代码块横向可滚 */
 .markdown-body img { max-width: 100%; height: auto; }
+#box-banner { color: #3fb950; font-weight: 600; margin-left: 8px; font-size: 12px; }

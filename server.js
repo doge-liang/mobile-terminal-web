@@ -114,22 +114,36 @@ function sanitizeSession(name) {
 function clampCols(v) { return Math.max(2, Math.min(500, parseInt(v, 10) || 80)); }
 function clampRows(v) { return Math.max(2, Math.min(300, parseInt(v, 10) || 24)); }
 
-function spawnTmux(session, cols, rows) {
+function spawnTmux(session, cols, rows, box) {
   // "; set-option mouse on" runs after attach: wheel reports then scroll tmux's
   // own scrollback (copy-mode) — that's how touch scrolling reaches history
   // set-clipboard on (not the default "external"): confirmed by isolated test to
   // be what makes tmux forward an inner app's OSC 52 out to the outer terminal
   // (xterm.js), where our OSC 52 handler writes it to the system clipboard.
   // "external" does not forward here; "on" does (and also fills a tmux buffer).
-  return pty.spawn('tmux', ['new-session', '-A', '-s', session,
-    ';', 'set-option', 'mouse', 'on',
-    ';', 'set-option', '-g', 'set-clipboard', 'on'], {
+  const argv = box
+    ? buildBoxTmuxArgv(box.name, box.path,
+        box.nix ? nixShellCommand(box.path, fs.existsSync(path.join(box.path, 'flake.nix'))) : null)
+    : ['new-session', '-A', '-s', session,
+       ';', 'set-option', 'mouse', 'on',
+       ';', 'set-option', '-g', 'set-clipboard', 'on'];
+  return pty.spawn('tmux', argv, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: SHELL_CWD,
     env: { ...process.env, TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
   });
+}
+
+// ?box= 进盒前置校验:名合法、socket 在本机、注册表里有它(取 path/nix 构造 attach argv)
+async function resolveBoxAttach(name) {
+  if (!isValidBoxName(name)) throw new Error('非法盒名');
+  if (!BOX_NODE) throw new Error('本节点未配置 ag-box');
+  if (!fs.existsSync(boxSockPath(name))) throw new Error('盒未在本机运行,请从面板重新加载');
+  const b = (await boxLs()).find((x) => x.name === name);
+  if (!b) throw new Error(`未知盒 ${name}`);
+  return { name, path: b.path, nix: !!b.nix };
 }
 
 // ---------------------------------------------------------------------------
@@ -142,10 +156,10 @@ const POLL_HOLD_MS = 25000;   // long-poll park time (Cloudflare cuts idle at ~1
 const SSE_KEEPALIVE_MS = 20000;
 const GC_IDLE_MS = 45000;     // kill pty if no downstream consumer for this long
 
-function createHttpSession(session, cols, rows, email) {
+function createHttpSession(session, cols, rows, email, box) {
   const sid = crypto.randomUUID();
   const s = {
-    term: spawnTmux(session, cols, rows),
+    term: spawnTmux(session, cols, rows, box),
     buf: [],
     pending: '',
     flushTimer: null,
@@ -759,8 +773,13 @@ const requestHandler = async (req, res) => {
       let body = {};
       try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
       const session = sanitizeSession(body.session);
-      const sid = createHttpSession(session, clampCols(body.cols), clampRows(body.rows), auth.email);
-      console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}" (http transport, sid=${sid.slice(0, 8)})`);
+      let box = null;
+      if (body.box) {
+        try { box = await resolveBoxAttach(String(body.box)); }
+        catch (e) { return json(res, 409, { error: e.message }); }
+      }
+      const sid = createHttpSession(session, clampCols(body.cols), clampRows(body.rows), auth.email, box);
+      console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}"${box ? ` box=${box.name}` : ''} (http transport, sid=${sid.slice(0, 8)})`);
       return json(res, 200, { sid });
     }
 
@@ -887,15 +906,25 @@ const upgradeHandler = async (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, auth));
 };
 
-wss.on('connection', (ws, req, auth) => {
+wss.on('connection', async (ws, req, auth) => {
   const url = new URL(req.url, 'http://localhost');
   const session = sanitizeSession(url.searchParams.get('session'));
   const cols = clampCols(url.searchParams.get('cols'));
   const rows = clampRows(url.searchParams.get('rows'));
 
-  console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}" (${cols}x${rows}, websocket)`);
+  let box = null;
+  const boxParam = url.searchParams.get('box');
+  if (boxParam) {
+    try { box = await resolveBoxAttach(boxParam); }
+    catch (e) {
+      ws.send(Buffer.from(`\r\n\x1b[31m[${e.message}]\x1b[0m\r\n`, 'utf8'));
+      return ws.close();
+    }
+  }
 
-  const term = spawnTmux(session, cols, rows);
+  console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}"${box ? ` box=${box.name}` : ''} (${cols}x${rows}, websocket)`);
+
+  const term = spawnTmux(session, cols, rows, box);
   let pendingOut = '';
   let flushTimer = null;
   term.onData((data) => {
