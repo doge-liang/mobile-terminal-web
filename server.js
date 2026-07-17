@@ -345,6 +345,7 @@ const requestHandler = async (req, res) => {
   if (url.pathname === '/pair' && req.method === 'GET') {
     const auth = await verifyAccessJwt(req);
     if (!auth.ok) return json(res, 403, { error: 'open /pair via the Access-protected domain' });
+    if (auth.cn) return json(res, 403, { error: 'service token cannot pair' });
     if (!FAST_HOST) return json(res, 400, { error: 'FAST_HOST not configured' });
     const tk = sign({ typ: 'pair', email: auth.email, jti: crypto.randomUUID(), exp: Math.floor(Date.now() / 1000) + PAIR_TTL_S });
     const dest = `https://${FAST_HOST}/pair/claim?tk=${encodeURIComponent(tk)}`;
@@ -752,6 +753,7 @@ const requestHandler = async (req, res) => {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(`<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><h3>需要配对</h3><p>此入口的凭证要先通过邮箱验证获取：</p><p><a style="color:#58a6ff" href="https://${MAIN_HOST}/pair">用主域名完成邮箱验证并配对 →</a></p><p style="color:#8b949e;font-size:13px">完成后本设备 30 天内可直接访问此快速入口。</p>`);
     }
+    if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
   }
 
   let filePath = null;
