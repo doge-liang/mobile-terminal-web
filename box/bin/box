@@ -12,9 +12,10 @@ const { pickNode } = require('../lib/sched');
 const { isValidBoxName } = require('../lib/mounts');
 const { run, ssh } = require('../lib/sh');
 const { loadConfig, hostFor } = require('../lib/env');
+const { formatBoxesJson } = require('../lib/lsjson');
 
 const USAGE = `用法: box <命令> [参数]
-  ls                         列出全部沙盒
+  ls [--json]                列出全部沙盒(--json 供程序解析)
   track <名> [路径]           登记现有目录为沙盒(默认 /root/<名>)
   up <名> [--node N] [--force]  拉起沙盒(自动调度节点)
   attach <名>                接入盒内 tmux
@@ -119,16 +120,21 @@ const cmds = {
     console.log(`${name} 已归档(快照上传、租约释放、沙盒停止)`);
   },
 
-  ls: (cfg) => {
+  ls: (cfg, args) => {
     const names = metaMod.listBoxNames(cfg);
+    const metas = names.map((n) => metaMod.readMeta(cfg, n)).filter(Boolean);
+    if (args.flags.json) {
+      const running = metas
+        .filter((m) => m.leased_by === cfg.node && runtime.isRunning(m.name))
+        .map((m) => m.name);
+      return void console.log(JSON.stringify(formatBoxesJson(metas, running)));
+    }
     if (!names.length) return void console.log('(无沙盒;box track 开始)');
-    for (const n of names) {
-      const m = metaMod.readMeta(cfg, n);
-      if (!m) continue;
+    for (const m of metas) {
       const state = m.leased_by ? `active@${m.leased_by}` : 'parked';
-      const local = m.leased_by === cfg.node && runtime.isRunning(n) ? ' [运行中]' : '';
+      const local = m.leased_by === cfg.node && runtime.isRunning(m.name) ? ' [运行中]' : '';
       const pin = m.pin ? ` pin=${m.pin}` : '';
-      console.log(`${n.padEnd(24)} ${state}${local}${pin}  快照:${m.last_snapshot || '无'}`);
+      console.log(`${m.name.padEnd(24)} ${state}${local}${pin}  快照:${m.last_snapshot || '无'}`);
     }
   },
 
