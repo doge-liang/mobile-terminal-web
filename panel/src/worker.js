@@ -369,14 +369,15 @@ document.getElementById("add").onsubmit = function(e){
 var boxesEl = document.getElementById("boxes");
 var boxOff = document.getElementById("box-offline");
 var boxNodes = [];
+var inflight = {};
 function fmtMem(b){ return b == null ? "" : (b/1048576).toFixed(0) + " MB"; }
 function nodeLabel(bn){ var n = boxNodes.find(function(x){ return x.boxNode === bn; }); return n ? n.name : (bn || "?"); }
-function boxOp(path, body, btn, done){
+function boxOp(path, body, btn, name, done){
   btn.disabled = true;
   fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
     .then(function(r){ return r.json(); })
-    .then(function(d){ btn.disabled = false; done(d); loadBoxes(); })
-    .catch(function(e){ btn.disabled = false; toast("请求失败: " + e.message); loadBoxes(); });
+    .then(function(d){ btn.disabled = false; delete inflight[name]; done(d); loadBoxes(); })
+    .catch(function(e){ btn.disabled = false; delete inflight[name]; toast("请求失败: " + e.message); loadBoxes(); });
 }
 function renderBoxes(d){
   boxNodes = d.nodes;
@@ -400,18 +401,23 @@ function renderBoxes(d){
     if (b.running && b.mem != null){ var mem = document.createElement("span"); mem.className = "bmem"; mem.textContent = fmtMem(b.mem); row.append(mem); }
     card.append(row);
     var ops = document.createElement("div"); ops.className = "bops";
+    var busy = inflight[b.name];
     var sel = document.createElement("select");
+    sel.disabled = !!busy;
     d.nodes.filter(function(n){ return n.online && n.boxNode; }).forEach(function(n){
       var o = document.createElement("option"); o.value = n.id; o.textContent = "加载到 " + n.name;
       if (b.runningOn && n.boxNode === b.runningOn) o.selected = true;
       sel.append(o);
     });
-    var loadBtn = document.createElement("button"); loadBtn.className = "bload"; loadBtn.textContent = "加载";
+    var loadBtn = document.createElement("button"); loadBtn.className = "bload";
+    loadBtn.textContent = busy === "迁移中…" ? busy : "加载";
+    loadBtn.disabled = !!busy;
     loadBtn.onclick = function(){
       if (!sel.value) return toast("无在线节点");
       var w = window.open("", "_blank");  // 先同步开空标签,避免 await 后被弹窗拦截
+      inflight[b.name] = "迁移中…";
       loadBtn.textContent = "迁移中…";
-      boxOp("/api/box/load", { name: b.name, targetNodeId: sel.value }, loadBtn, function(d2){
+      boxOp("/api/box/load", { name: b.name, targetNodeId: sel.value }, loadBtn, b.name, function(d2){
         loadBtn.textContent = "加载";
         if (d2.ok){ w.location = d2.termUrl; toast("已加载"); }
         else { if (w) w.close(); toast(d2.error || "加载失败"); }
@@ -419,20 +425,26 @@ function renderBoxes(d){
     };
     ops.append(sel, loadBtn);
     if (b.leased_by){
-      var parkBtn = document.createElement("button"); parkBtn.className = "bpark"; parkBtn.textContent = "归档";
+      var parkBtn = document.createElement("button"); parkBtn.className = "bpark";
+      parkBtn.textContent = busy === "归档中…" ? busy : "归档";
+      parkBtn.disabled = !!busy;
       parkBtn.onclick = function(){
+        inflight[b.name] = "归档中…";
         parkBtn.textContent = "归档中…";
-        boxOp("/api/box/park", { name: b.name }, parkBtn, function(d2){
+        boxOp("/api/box/park", { name: b.name }, parkBtn, b.name, function(d2){
           parkBtn.textContent = "归档";
           toast(d2.ok ? "已归档" : (d2.error || "归档失败"));
         });
       };
       ops.append(parkBtn);
     } else {
-      var dropBtn = document.createElement("button"); dropBtn.className = "bdrop"; dropBtn.textContent = "删除";
+      var dropBtn = document.createElement("button"); dropBtn.className = "bdrop";
+      dropBtn.textContent = busy === "删除中…" ? busy : "删除";
+      dropBtn.disabled = !!busy;
       dropBtn.onclick = function(){
         if (!confirm("删除沙盒「" + b.name + "」的全部 R2 数据?不可恢复。")) return;
-        boxOp("/api/box/drop", { name: b.name }, dropBtn, function(d2){
+        inflight[b.name] = "删除中…";
+        boxOp("/api/box/drop", { name: b.name }, dropBtn, b.name, function(d2){
           toast(d2.ok ? "已删除" : (d2.error || "删除失败"));
         });
       };
