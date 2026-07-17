@@ -287,9 +287,30 @@ const HTML = `<!DOCTYPE html>
     border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px;opacity:0;
     transition:opacity .2s;pointer-events:none}
   .toast.show{opacity:1}
+  h2{font-size:15px;margin:18px 0 10px;color:#8b949e}
+  .bcard{background:var(--bar);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+  .brow{display:flex;align-items:center;gap:8px}
+  .bname{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .badge{font-size:11px;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .badge.active{background:#1a7f37;color:#fff}
+  .badge.parked{background:#30363d;color:#8b949e}
+  .badge.pin{background:transparent;border:1px solid var(--border);color:#8b949e}
+  .bmem{font-size:11px;color:#8b949e}
+  .bops{display:flex;gap:8px;margin-top:10px;align-items:center}
+  .bops select{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--fg);padding:7px 8px;font:inherit;flex:1}
+  .bops button{border:none;border-radius:8px;padding:8px 12px;font:inherit;font-weight:600}
+  .bload{background:var(--accent);color:#0d1117}
+  .bpark{background:transparent;border:1px solid var(--border);color:var(--fg)}
+  .bdrop{background:transparent;border:1px solid var(--border);color:#f85149}
+  button[disabled]{opacity:.5}
+  .offline{color:#f85149;font-size:12px;margin-bottom:8px}
 </style></head>
 <body>
 <h1>节点面板</h1>
+<h2>沙盒</h2>
+<div id="box-offline"></div>
+<div id="boxes">加载中…</div>
+<h2>节点</h2>
 <div id="list"></div>
 <form id="add">
   <input id="f-name" placeholder="名称，如 RackNerd-8G" maxlength="40" autocomplete="off">
@@ -345,5 +366,87 @@ document.getElementById("add").onsubmit = function(e){
       if (r.ok){ render(d.nodes); e.target.reset(); toast("已添加"); } else toast(d.error || "添加失败");
     }); });
 };
+var boxesEl = document.getElementById("boxes");
+var boxOff = document.getElementById("box-offline");
+var boxNodes = [];
+function fmtMem(b){ return b == null ? "" : (b/1048576).toFixed(0) + " MB"; }
+function nodeLabel(bn){ var n = boxNodes.find(function(x){ return x.boxNode === bn; }); return n ? n.name : (bn || "?"); }
+function boxOp(path, body, btn, done){
+  btn.disabled = true;
+  fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ btn.disabled = false; done(d); loadBoxes(); })
+    .catch(function(e){ btn.disabled = false; toast("请求失败: " + e.message); loadBoxes(); });
+}
+function renderBoxes(d){
+  boxNodes = d.nodes;
+  var off = d.nodes.filter(function(n){ return !n.online; });
+  boxOff.innerHTML = "";
+  off.forEach(function(n){
+    var el = document.createElement("div"); el.className = "offline";
+    el.textContent = "节点「" + n.name + "」不可达:" + (n.reason || ""); boxOff.append(el);
+  });
+  boxesEl.innerHTML = "";
+  if (!d.boxes.length){ boxesEl.textContent = "(无沙盒;在节点终端里 ag-box track)"; return; }
+  d.boxes.forEach(function(b){
+    var card = document.createElement("div"); card.className = "bcard";
+    var row = document.createElement("div"); row.className = "brow";
+    var nm = document.createElement("div"); nm.className = "bname"; nm.textContent = b.name;
+    var badge = document.createElement("span");
+    if (b.leased_by){ badge.className = "badge active"; badge.textContent = "active@" + nodeLabel(b.leased_by); }
+    else { badge.className = "badge parked"; badge.textContent = "parked"; }
+    row.append(nm, badge);
+    if (b.pin){ var pin = document.createElement("span"); pin.className = "badge pin"; pin.textContent = "pin=" + nodeLabel(b.pin); row.append(pin); }
+    if (b.running && b.mem != null){ var mem = document.createElement("span"); mem.className = "bmem"; mem.textContent = fmtMem(b.mem); row.append(mem); }
+    card.append(row);
+    var ops = document.createElement("div"); ops.className = "bops";
+    var sel = document.createElement("select");
+    d.nodes.filter(function(n){ return n.online && n.boxNode; }).forEach(function(n){
+      var o = document.createElement("option"); o.value = n.id; o.textContent = "加载到 " + n.name;
+      if (b.runningOn && n.boxNode === b.runningOn) o.selected = true;
+      sel.append(o);
+    });
+    var loadBtn = document.createElement("button"); loadBtn.className = "bload"; loadBtn.textContent = "加载";
+    loadBtn.onclick = function(){
+      if (!sel.value) return toast("无在线节点");
+      var w = window.open("", "_blank");  // 先同步开空标签,避免 await 后被弹窗拦截
+      loadBtn.textContent = "迁移中…";
+      boxOp("/api/box/load", { name: b.name, targetNodeId: sel.value }, loadBtn, function(d2){
+        loadBtn.textContent = "加载";
+        if (d2.ok){ w.location = d2.termUrl; toast("已加载"); }
+        else { if (w) w.close(); toast(d2.error || "加载失败"); }
+      });
+    };
+    ops.append(sel, loadBtn);
+    if (b.leased_by){
+      var parkBtn = document.createElement("button"); parkBtn.className = "bpark"; parkBtn.textContent = "归档";
+      parkBtn.onclick = function(){
+        parkBtn.textContent = "归档中…";
+        boxOp("/api/box/park", { name: b.name }, parkBtn, function(d2){
+          parkBtn.textContent = "归档";
+          toast(d2.ok ? "已归档" : (d2.error || "归档失败"));
+        });
+      };
+      ops.append(parkBtn);
+    } else {
+      var dropBtn = document.createElement("button"); dropBtn.className = "bdrop"; dropBtn.textContent = "删除";
+      dropBtn.onclick = function(){
+        if (!confirm("删除沙盒「" + b.name + "」的全部 R2 数据?不可恢复。")) return;
+        boxOp("/api/box/drop", { name: b.name }, dropBtn, function(d2){
+          toast(d2.ok ? "已删除" : (d2.error || "删除失败"));
+        });
+      };
+      ops.append(dropBtn);
+    }
+    card.append(ops);
+    boxesEl.append(card);
+  });
+}
+function loadBoxes(){
+  fetch("/api/box/ls").then(function(r){ return r.json(); }).then(renderBoxes)
+    .catch(function(){ boxesEl.textContent = "沙盒列表加载失败"; });
+}
+loadBoxes();
+setInterval(loadBoxes, 10000);
 load();
 </script></body></html>`;
