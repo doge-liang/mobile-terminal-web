@@ -8,6 +8,7 @@ const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
 const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
+const { isValidBoxName, parseBoxNode, serviceAuthAllowed, boxSockPath, nixShellCommand, buildBoxTmuxArgv, readBoxMem } = require('./lib/box-api');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -20,6 +21,8 @@ const DEFAULT_SESSION = process.env.TMUX_SESSION || 'mobile';
 // (local development only — never expose the port publicly in that state).
 const CF_TEAM_DOMAIN = process.env.CF_ACCESS_TEAM_DOMAIN || '';
 const CF_AUD = process.env.CF_ACCESS_AUD || '';
+// 面板 Worker 的 Access 服务令牌 common_name 白名单;未配置则服务令牌一律拒
+const BOX_CTRL_CN = process.env.BOX_CTRL_CN || '';
 
 let jwks = null;
 async function verifyAccessJwt(req) {
@@ -35,7 +38,7 @@ async function verifyAccessJwt(req) {
       issuer: `https://${CF_TEAM_DOMAIN}`,
       audience: CF_AUD,
     });
-    return { ok: true, email: payload.email || payload.sub };
+    return { ok: true, email: payload.email || payload.sub, cn: payload.common_name || null };
   } catch (err) {
     return { ok: false, reason: err.message };
   }
@@ -376,6 +379,11 @@ const requestHandler = async (req, res) => {
       const hasJwt = !!req.headers['cf-access-jwt-assertion'];
       console.log(`[403] ${req.method} ${url.pathname} host=${req.headers.host} cookie=${hasCookie} jwt=${hasJwt} reason=${auth.reason}`);
       return json(res, 403, { error: 'unauthorized', from: 'mobile-terminal-app' });
+    }
+
+    if (!serviceAuthAllowed(auth.cn, url.pathname, BOX_CTRL_CN)) {
+      console.log(`[403] service-token cn=${auth.cn} denied for ${url.pathname}`);
+      return json(res, 403, { error: 'service token restricted to /t/box/*' });
     }
 
     if (req.method === 'GET' && url.pathname === '/t/sessions') {
@@ -784,6 +792,10 @@ const upgradeHandler = async (req, socket, head) => {
   const auth = await verifyAuth(req);
   if (!auth.ok) {
     console.error(`WS rejected: ${auth.reason}`);
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    return socket.destroy();
+  }
+  if (auth.cn) {  // 服务令牌只许控制面 HTTP,不开终端
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     return socket.destroy();
   }
