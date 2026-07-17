@@ -124,6 +124,37 @@ async function aggregateBoxLs(env, cfg) {
   return mergeBoxLs(await Promise.all(nodes.map((n) => nodeBoxLs(n, cfg))));
 }
 
+async function postNodeBox(node, op, name, cfg) {
+  try {
+    const r = await fetch(node.url + "/t/box/" + op, {
+      method: "POST",
+      headers: { ...svcHeaders(cfg), "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+      signal: AbortSignal.timeout(600000),
+    });
+    if (!r.ok) return { ok: false, error: "节点 HTTP " + r.status + (r.status === 403 ? "(服务令牌?)" : "") };
+    const body = JSON.parse(await r.text());  // 节点用前导空白心跳,JSON.parse 容忍
+    return body.ok ? { ok: true } : { ok: false, error: body.error || "unknown" };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || "unreachable" };
+  }
+}
+
+// 浏览器→Worker 这一跳同样受 ~100s 无字节超时约束:先回流式 200,
+// 期间周期写空格,编排完成后写最终 JSON(客户端 r.json() 不受前导空白影响)
+function streamJson(work) {
+  const enc = new TextEncoder();
+  return new Response(new ReadableStream({
+    async start(c) {
+      const hb = setInterval(() => { try { c.enqueue(enc.encode(" ")); } catch {} }, 15000);
+      let out;
+      try { out = await work(); } catch (e) { out = { ok: false, error: (e && e.message) || "internal" }; }
+      clearInterval(hb);
+      try { c.enqueue(enc.encode(JSON.stringify(out))); c.close(); } catch {}
+    },
+  }), { headers: { "content-type": "application/json" } });
+}
+
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 export default {
@@ -135,6 +166,63 @@ export default {
     }
     if (url.pathname === "/api/box/ls" && request.method === "GET") {
       return json(await aggregateBoxLs(env, cfg));
+    }
+    if (url.pathname.startsWith("/api/box/") && request.method === "POST") {
+      let body; try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
+      const name = body.name;
+      if (!validBoxName(name)) return json({ error: "非法盒名" }, 400);
+
+      if (url.pathname === "/api/box/load") {
+        const targetNodeId = String(body.targetNodeId || "");
+        return streamJson(async () => {
+          const agg = await aggregateBoxLs(env, cfg);
+          const target = agg.nodes.find((n) => n.id === targetNodeId);
+          if (!target) return { ok: false, error: "未知目标节点" };
+          if (!target.online) return { ok: false, error: "目标节点离线" };
+          const plan = planLoad(agg.boxes, name, target.boxNode);
+          if (plan.error) return { ok: false, error: plan.error };
+          if (plan.park) {
+            const src = agg.nodes.find((n) => n.boxNode === plan.park);
+            if (!src || !src.online) return { ok: false, error: "持租节点 " + plan.park + " 离线,无法迁移" };
+            const p = await postNodeBox(src, "park", name, cfg);
+            if (!p.ok) return { ok: false, error: "归档失败: " + p.error };
+          }
+          if (plan.up) {
+            const u = await postNodeBox(target, "up", name, cfg);
+            if (!u.ok) {
+              return plan.park
+                ? { ok: false, retriable: true, error: "已归档但拉起失败(数据在 R2 完好,可重试加载): " + u.error }
+                : { ok: false, retriable: true, error: "拉起失败: " + u.error };
+            }
+          }
+          return { ok: true, termUrl: target.url + "/?box=" + encodeURIComponent(name) };
+        });
+      }
+
+      if (url.pathname === "/api/box/park") {
+        return streamJson(async () => {
+          const agg = await aggregateBoxLs(env, cfg);
+          const b = agg.boxes.find((x) => x.name === name);
+          if (!b) return { ok: false, error: "未知盒 " + name };
+          if (!b.leased_by) return { ok: true };  // 已 parked,幂等
+          const src = agg.nodes.find((n) => n.boxNode === b.leased_by);
+          if (!src || !src.online) return { ok: false, error: "持租节点 " + b.leased_by + " 离线" };
+          return postNodeBox(src, "park", name, cfg);
+        });
+      }
+
+      if (url.pathname === "/api/box/drop") {
+        return streamJson(async () => {
+          const agg = await aggregateBoxLs(env, cfg);
+          const b = agg.boxes.find((x) => x.name === name);
+          if (!b) return { ok: false, error: "未知盒 " + name };
+          if (b.leased_by) return { ok: false, error: "盒活跃于 " + b.leased_by + ",先归档再删除" };
+          const any = agg.nodes.find((n) => n.online && n.boxNode);
+          if (!any) return { ok: false, error: "无在线节点可执行删除" };
+          return postNodeBox(any, "drop", name, cfg);
+        });
+      }
+      return json({ error: "unknown box endpoint" }, 404);
     }
     if (url.pathname === "/api/nodes" && request.method === "GET") {
       return json({ nodes: await loadNodes(env, cfg) });
