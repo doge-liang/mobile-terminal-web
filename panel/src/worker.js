@@ -6,12 +6,16 @@
 //   PANEL_AUD    本面板 Access 应用的 AUD Tag（留空则暂放行，便于联调）
 //   ZONE_SUFFIX  允许的节点域名后缀，如 .example.com（留空则只校验 https）
 //   SEED_NODES   可选：初始节点表 JSON；留空则首启为空，用面板 UI 添加
+//   SVC_TOKEN_ID / SVC_TOKEN_SECRET  Worker secret（非 [vars]）：Access 服务令牌，
+//     供本 Worker 经 Access 调各节点 /t/box/* 控制面
 function cfgFrom(env) {
   return {
     teamDomain: env.TEAM_DOMAIN || "",
     panelAud: env.PANEL_AUD || "",
     zoneSuffix: env.ZONE_SUFFIX || "",
     seed: env.SEED_NODES ? JSON.parse(env.SEED_NODES) : [],
+    svcId: env.SVC_TOKEN_ID || "",
+    svcSecret: env.SVC_TOKEN_SECRET || "",
   };
 }
 
@@ -65,6 +69,61 @@ async function verifyAccess(request, cfg) {
     b64urlToBytes(s), new TextEncoder().encode(h + "." + p));
 }
 
+// --- 盒控制面:服务端经 Access 服务令牌调各节点 /t/box/*,浏览器只见本 Worker ---
+const validBoxName = (n) => typeof n === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(n) && !n.includes("..");
+const svcHeaders = (cfg) => ({ "CF-Access-Client-Id": cfg.svcId, "CF-Access-Client-Secret": cfg.svcSecret });
+
+async function nodeBoxLs(node, cfg) {
+  try {
+    const r = await fetch(node.url + "/t/box/ls", { headers: svcHeaders(cfg), signal: AbortSignal.timeout(15000) });
+    if (r.status === 403) return { node, ok: false, reason: "控制面无法访问节点(服务令牌?)" };
+    if (!r.ok) return { node, ok: false, reason: "HTTP " + r.status };
+    return { node, ok: true, data: await r.json() };
+  } catch (e) {
+    return { node, ok: false, reason: (e && e.message) || "unreachable" };
+  }
+}
+
+// 聚合各节点上报:注册表字段(R2 一致)取首见;running/mem 归上报的那个节点
+export function mergeBoxLs(results) {
+  const nodes = results.map((r) => ({
+    id: r.node.id, name: r.node.name, url: r.node.url,
+    boxNode: r.ok ? r.data.node : null, online: !!r.ok, reason: r.ok ? undefined : r.reason,
+  }));
+  const byName = new Map();
+  for (const r of results) {
+    if (!r.ok) continue;
+    for (const b of r.data.boxes) {
+      const cur = byName.get(b.name) || { ...b, running: false, runningOn: null, mem: null };
+      if (b.running) {
+        cur.running = true;
+        cur.runningOn = r.data.node;
+        cur.mem = r.data.mem && r.data.mem[b.name] != null ? r.data.mem[b.name] : null;
+      }
+      byName.set(b.name, cur);
+    }
+  }
+  return { boxes: [...byName.values()], nodes };
+}
+
+// 纯编排决策:要不要 park、去哪 up(执行由调用方做,便于单测)
+export function planLoad(boxes, name, targetBoxNode) {
+  const b = boxes.find((x) => x.name === name);
+  if (!b) return { error: "未知盒 " + name };
+  if (!targetBoxNode) return { error: "目标节点离线或未上报 ag-box 身份" };
+  if (b.leased_by === targetBoxNode) {
+    return b.running && b.runningOn === targetBoxNode
+      ? { park: null, up: null }
+      : { park: null, up: targetBoxNode };
+  }
+  return { park: b.leased_by || null, up: targetBoxNode };
+}
+
+async function aggregateBoxLs(env, cfg) {
+  const nodes = await loadNodes(env, cfg);
+  return mergeBoxLs(await Promise.all(nodes.map((n) => nodeBoxLs(n, cfg))));
+}
+
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 export default {
@@ -73,6 +132,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
       if (!(await verifyAccess(request, cfg))) return json({ error: "forbidden" }, 403);
+    }
+    if (url.pathname === "/api/box/ls" && request.method === "GET") {
+      return json(await aggregateBoxLs(env, cfg));
     }
     if (url.pathname === "/api/nodes" && request.method === "GET") {
       return json({ nodes: await loadNodes(env, cfg) });
