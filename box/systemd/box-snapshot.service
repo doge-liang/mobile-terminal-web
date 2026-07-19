@@ -1,0 +1,9 @@
+[Unit]
+Description=box hourly snapshot + globals sync
+
+[Service]
+Type=oneshot
+# systemd 服务不继承登录环境;restic 缓存目录依赖 $HOME,缺失会导致每轮全量重扫
+Environment=HOME=/root
+ExecStart=/usr/local/bin/box snapshot --active
+ExecStart=/usr/local/bin/box globals auto

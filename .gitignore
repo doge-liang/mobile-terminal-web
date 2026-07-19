@@ -4,5 +4,7 @@ node_modules/
 .auth-secret
 metrics/
 scripts/nodes
+box/env
+box/nodes
 .deploy-prev.tgz
 docs/superpowers/

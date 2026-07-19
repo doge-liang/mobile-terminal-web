@@ -1,0 +1,3 @@
+# /root/.config/box/nodes —— 名字 + ssh 别名(本机写 local);每节点一份,视角不同
+term1 local
+term2 my-second-node

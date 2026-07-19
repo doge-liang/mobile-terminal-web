@@ -1,0 +1,8 @@
+[Unit]
+Description=box weekly restic prune
+
+[Service]
+Type=oneshot
+# systemd 服务不继承登录环境;restic 缓存目录依赖 $HOME
+Environment=HOME=/root
+ExecStart=/usr/local/bin/box prune

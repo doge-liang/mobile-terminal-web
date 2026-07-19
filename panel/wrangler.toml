@@ -23,3 +23,8 @@ TEAM_DOMAIN = "your-team.cloudflareaccess.com"   # Access 团队域
 ZONE_SUFFIX = ".example.com"                     # 允许的节点域名后缀（留空=只校验 https）
 # PANEL_AUD 用 secret 注入，不写这里
 # SEED_NODES = '[]'                              # 可选：初始节点表 JSON
+
+# 盒控制面服务令牌(Cloudflare Access → Service Auth 创建,加入各节点 term 应用策略):
+#   wrangler secret put SVC_TOKEN_ID
+#   wrangler secret put SVC_TOKEN_SECRET
+# 节点侧需在 /etc/default/mobile-terminal 设 BOX_CTRL_CN=<服务令牌 Client ID 名(common_name)>

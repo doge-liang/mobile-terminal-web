@@ -8,6 +8,7 @@ const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
 const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
+const { isValidBoxName, parseBoxNode, serviceAuthAllowed, boxSockPath, nixShellCommand, buildBoxTmuxArgv, readBoxMem } = require('./lib/box-api');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -20,6 +21,8 @@ const DEFAULT_SESSION = process.env.TMUX_SESSION || 'mobile';
 // (local development only — never expose the port publicly in that state).
 const CF_TEAM_DOMAIN = process.env.CF_ACCESS_TEAM_DOMAIN || '';
 const CF_AUD = process.env.CF_ACCESS_AUD || '';
+// 面板 Worker 的 Access 服务令牌 common_name 白名单;未配置则服务令牌一律拒
+const BOX_CTRL_CN = process.env.BOX_CTRL_CN || '';
 
 let jwks = null;
 async function verifyAccessJwt(req) {
@@ -35,7 +38,7 @@ async function verifyAccessJwt(req) {
       issuer: `https://${CF_TEAM_DOMAIN}`,
       audience: CF_AUD,
     });
-    return { ok: true, email: payload.email || payload.sub };
+    return { ok: true, email: payload.email || payload.sub, cn: payload.common_name || null };
   } catch (err) {
     return { ok: false, reason: err.message };
   }
@@ -111,22 +114,37 @@ function sanitizeSession(name) {
 function clampCols(v) { return Math.max(2, Math.min(500, parseInt(v, 10) || 80)); }
 function clampRows(v) { return Math.max(2, Math.min(300, parseInt(v, 10) || 24)); }
 
-function spawnTmux(session, cols, rows) {
+function spawnTmux(session, cols, rows, box) {
   // "; set-option mouse on" runs after attach: wheel reports then scroll tmux's
   // own scrollback (copy-mode) — that's how touch scrolling reaches history
   // set-clipboard on (not the default "external"): confirmed by isolated test to
   // be what makes tmux forward an inner app's OSC 52 out to the outer terminal
   // (xterm.js), where our OSC 52 handler writes it to the system clipboard.
   // "external" does not forward here; "on" does (and also fills a tmux buffer).
-  return pty.spawn('tmux', ['new-session', '-A', '-s', session,
-    ';', 'set-option', 'mouse', 'on',
-    ';', 'set-option', '-g', 'set-clipboard', 'on'], {
+  const argv = box
+    ? buildBoxTmuxArgv(box.name, box.path,
+        box.nix ? nixShellCommand(box.path, fs.existsSync(path.join(box.path, 'flake.nix'))) : null)
+    : ['new-session', '-A', '-s', session,
+       ';', 'set-option', 'mouse', 'on',
+       ';', 'set-option', '-g', 'set-clipboard', 'on'];
+  return pty.spawn('tmux', argv, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: SHELL_CWD,
     env: { ...process.env, TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
   });
+}
+
+// ?box= 进盒前置校验:名合法、socket 在本机、注册表里有它(取 path/nix 构造 attach argv)
+async function resolveBoxAttach(name) {
+  if (!isValidBoxName(name)) throw new Error('非法盒名');
+  if (!BOX_NODE) throw new Error('本节点未配置 ag-box');
+  if (!fs.existsSync(boxSockPath(name))) throw new Error('盒未在本机运行,请从面板重新加载');
+  const b = (await boxLs()).find((x) => x.name === name);
+  if (!b) throw new Error(`未知盒 ${name}`);
+  if (b.leased_by !== BOX_NODE || !b.running) throw new Error('盒未在本机运行,请从面板重新加载');
+  return { name, path: b.path, nix: !!b.nix };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,10 +157,10 @@ const POLL_HOLD_MS = 25000;   // long-poll park time (Cloudflare cuts idle at ~1
 const SSE_KEEPALIVE_MS = 20000;
 const GC_IDLE_MS = 45000;     // kill pty if no downstream consumer for this long
 
-function createHttpSession(session, cols, rows, email) {
+function createHttpSession(session, cols, rows, email, box) {
   const sid = crypto.randomUUID();
   const s = {
-    term: spawnTmux(session, cols, rows),
+    term: spawnTmux(session, cols, rows, box),
     buf: [],
     pending: '',
     flushTimer: null,
@@ -272,6 +290,53 @@ function json(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// --- 盒控制面:面板 Worker 经服务令牌调用;全部 execFile 固定 argv,零 shell ---
+const AG_BOX = process.env.AG_BOX || 'ag-box';
+const BOX_ENV_PATH = '/root/.config/box/env';
+let BOX_NODE = null;  // 本机 ag-box 身份;null = 本节点未配 ag-box,box 端点返回 501
+try { BOX_NODE = parseBoxNode(fs.readFileSync(BOX_ENV_PATH, 'utf8')); } catch { /* 未装 box 的节点 */ }
+
+function runAgBox(args, { input, timeoutMs = 600000 } = {}) {
+  return new Promise((resolve) => {
+    const child = execFile(AG_BOX, args,
+      { timeout: timeoutMs, maxBuffer: 8 << 20, env: { ...process.env, HOME: process.env.HOME || '/root' } },
+      (err, stdout, stderr) => resolve({
+        status: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        stdout: stdout || '', stderr: stderr || '',
+      }));
+    if (input) child.stdin.write(input);
+    child.stdin.end();
+  });
+}
+
+const agBoxErr = (r, op) => (r.stderr.trim().split('\n').pop() || `ag-box ${op} 退出码 ${r.status}`);
+
+// ls 结果 4s TTL 缓存:ag-box ls 每次 rclone lsf + 每盒 rclone cat 全打 R2,
+// 面板 10s 轮询下不缓存会造成持续进程与 R2 请求 churn;park/up/drop 后主动失效
+let boxLsCache = { at: 0, promise: null };
+function boxLs() {
+  if (boxLsCache.promise && Date.now() - boxLsCache.at < 4000) return boxLsCache.promise;
+  const promise = runAgBox(['ls', '--json'], { timeoutMs: 60000 }).then((r) => {
+    if (r.status !== 0) throw new Error(`ag-box ls 失败: ${agBoxErr(r, 'ls')}`);
+    return JSON.parse(r.stdout);
+  });
+  boxLsCache = { at: Date.now(), promise };
+  promise.catch(() => { boxLsCache.at = 0; });  // 失败不缓存
+  return promise;
+}
+const invalidateBoxLs = () => { boxLsCache.at = 0; };
+
+// 长操作(park 快照上传/up restore)可能超 Cloudflare ~100s 无字节超时;
+// 先发 200 头,期间周期写空格(JSON.parse 容忍前导空白),结束写 JSON 体。
+// 因头已发出,错误也走 200 + {ok:false,error},调用方看 body.ok。
+function jsonHeartbeat(res, work) {
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  const hb = setInterval(() => res.write(' '), 20000);
+  work.then(
+    (body) => { clearInterval(hb); res.end(JSON.stringify(body)); },
+    (e) => { clearInterval(hb); res.end(JSON.stringify({ ok: false, error: e.message })); });
+}
+
 // --- static files ---
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -342,6 +407,7 @@ const requestHandler = async (req, res) => {
   if (url.pathname === '/pair' && req.method === 'GET') {
     const auth = await verifyAccessJwt(req);
     if (!auth.ok) return json(res, 403, { error: 'open /pair via the Access-protected domain' });
+    if (auth.cn) return json(res, 403, { error: 'service token cannot pair' });
     if (!FAST_HOST) return json(res, 400, { error: 'FAST_HOST not configured' });
     const tk = sign({ typ: 'pair', email: auth.email, jti: crypto.randomUUID(), exp: Math.floor(Date.now() / 1000) + PAIR_TTL_S });
     const dest = `https://${FAST_HOST}/pair/claim?tk=${encodeURIComponent(tk)}`;
@@ -376,6 +442,47 @@ const requestHandler = async (req, res) => {
       const hasJwt = !!req.headers['cf-access-jwt-assertion'];
       console.log(`[403] ${req.method} ${url.pathname} host=${req.headers.host} cookie=${hasCookie} jwt=${hasJwt} reason=${auth.reason}`);
       return json(res, 403, { error: 'unauthorized', from: 'mobile-terminal-app' });
+    }
+
+    if (!serviceAuthAllowed(auth.cn, url.pathname, BOX_CTRL_CN)) {
+      console.log(`[403] service-token cn=${auth.cn} denied for ${url.pathname}`);
+      return json(res, 403, { error: 'service token restricted to /t/box/*' });
+    }
+
+    if (url.pathname.startsWith('/t/box/')) {
+      if (!BOX_NODE) return json(res, 501, { error: '本节点未配置 ag-box' });
+
+      if (req.method === 'GET' && url.pathname === '/t/box/ls') {
+        try {
+          const boxes = await boxLs();
+          const mem = {};
+          for (const b of boxes) {
+            if (!b.running) continue;
+            const m = readBoxMem(b.name, (p) => fs.readFileSync(p, 'utf8'));
+            if (m != null) mem[b.name] = m;
+          }
+          return json(res, 200, { node: BOX_NODE, boxes, mem });
+        } catch (e) {
+          return json(res, 502, { error: e.message });
+        }
+      }
+
+      const ops = { '/t/box/park': ['park'], '/t/box/up': ['up'], '/t/box/drop': ['drop'] };
+      if (req.method === 'POST' && ops[url.pathname]) {
+        let body = {};
+        try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!isValidBoxName(body.name)) return json(res, 400, { error: '非法盒名' });
+        const op = ops[url.pathname][0];
+        const argv = op === 'up' ? ['up', body.name, '--local'] : [op, body.name];
+        const input = op === 'drop' ? 'yes\n' : undefined;  // drop 是 readline 交互确认,喂 yes
+        console.log(`[box] ${auth.cn || auth.email} ${op} ${body.name}`);
+        invalidateBoxLs();
+        return jsonHeartbeat(res, runAgBox(argv, { input }).then((r) => {
+          invalidateBoxLs();
+          return r.status === 0 ? { ok: true } : { ok: false, error: agBoxErr(r, op) };
+        }));
+      }
+      return json(res, 404, { error: 'unknown box endpoint' });
     }
 
     if (req.method === 'GET' && url.pathname === '/t/sessions') {
@@ -667,8 +774,13 @@ const requestHandler = async (req, res) => {
       let body = {};
       try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
       const session = sanitizeSession(body.session);
-      const sid = createHttpSession(session, clampCols(body.cols), clampRows(body.rows), auth.email);
-      console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}" (http transport, sid=${sid.slice(0, 8)})`);
+      let box = null;
+      if (body.box) {
+        try { box = await resolveBoxAttach(String(body.box)); }
+        catch (e) { return json(res, 409, { error: e.message }); }
+      }
+      const sid = createHttpSession(session, clampCols(body.cols), clampRows(body.rows), auth.email, box);
+      console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}"${box ? ` box=${box.name}` : ''} (http transport, sid=${sid.slice(0, 8)})`);
       return json(res, 200, { sid });
     }
 
@@ -744,6 +856,7 @@ const requestHandler = async (req, res) => {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(`<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><h3>需要配对</h3><p>此入口的凭证要先通过邮箱验证获取：</p><p><a style="color:#58a6ff" href="https://${MAIN_HOST}/pair">用主域名完成邮箱验证并配对 →</a></p><p style="color:#8b949e;font-size:13px">完成后本设备 30 天内可直接访问此快速入口。</p>`);
     }
+    if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
   }
 
   let filePath = null;
@@ -787,18 +900,32 @@ const upgradeHandler = async (req, socket, head) => {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     return socket.destroy();
   }
+  if (auth.cn) {  // 服务令牌只许控制面 HTTP,不开终端
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    return socket.destroy();
+  }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, auth));
 };
 
-wss.on('connection', (ws, req, auth) => {
+wss.on('connection', async (ws, req, auth) => {
   const url = new URL(req.url, 'http://localhost');
   const session = sanitizeSession(url.searchParams.get('session'));
   const cols = clampCols(url.searchParams.get('cols'));
   const rows = clampRows(url.searchParams.get('rows'));
 
-  console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}" (${cols}x${rows}, websocket)`);
+  let box = null;
+  const boxParam = url.searchParams.get('box');
+  if (boxParam) {
+    try { box = await resolveBoxAttach(boxParam); }
+    catch (e) {
+      ws.send(Buffer.from(`\r\n\x1b[31m[${e.message}]\x1b[0m\r\n`, 'utf8'));
+      return ws.close(4008, 'box attach failed');
+    }
+  }
 
-  const term = spawnTmux(session, cols, rows);
+  console.log(`[${new Date().toISOString()}] ${auth.email} attached to tmux "${session}"${box ? ` box=${box.name}` : ''} (${cols}x${rows}, websocket)`);
+
+  const term = spawnTmux(session, cols, rows, box);
   let pendingOut = '';
   let flushTimer = null;
   term.onData((data) => {
