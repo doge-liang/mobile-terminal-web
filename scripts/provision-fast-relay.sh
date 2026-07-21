@@ -389,8 +389,12 @@ printf 'import /etc/caddy-fast/conf.d/*.caddy\n' > /etc/caddy-fast/Caddyfile
 cat > "/etc/caddy-fast/conf.d/$FDOM.caddy" <<CADDY
 $FDOM:$FPORT {
     bind $OWGIP
-    log { output stderr }
-    tls { dns cloudflare {env.CF_DNS_TOKEN} }
+    log {
+        output stderr
+    }
+    tls {
+        dns cloudflare {env.CF_DNS_TOKEN}
+    }
     reverse_proxy 127.0.0.1:7681
 }
 CADDY
