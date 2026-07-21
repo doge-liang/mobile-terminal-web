@@ -374,7 +374,8 @@ if ! { [ -x "$CADDY" ] && "$CADDY" list-modules 2>/dev/null | grep -q '^dns.prov
     aarch64) ARCH=arm64 ;;
     *) echo "UNSUPPORTED_ARCH: $(uname -m)(下载映射只认 x86_64/aarch64)。" >&2; exit 1 ;;
   esac
-  curl -fsSL -o /tmp/caddy-fast.bin "https://caddyserver.com/api/download?package=github.com/caddy-dns/cloudflare&os=linux&arch=$ARCH" >&2
+  # 注意参数名是 p= (可重复加多个插件)；package= 会被下载 API 忽略而返回裸构建。
+  curl -fsSL -o /tmp/caddy-fast.bin "https://caddyserver.com/api/download?os=linux&arch=$ARCH&p=github.com/caddy-dns/cloudflare" >&2
   install -m 0755 /tmp/caddy-fast.bin "$CADDY"
   rm -f /tmp/caddy-fast.bin
 fi
