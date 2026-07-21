@@ -382,9 +382,13 @@ fi
 # caddy 用户 + 独立数据目录(证书跨重启持久；不与 apt caddy 的 /var/lib/caddy 混用存储)。
 id caddy >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/caddy-fast --shell /usr/sbin/nologin caddy
 mkdir -p /var/lib/caddy-fast /etc/caddy-fast/conf.d
+# 目录须 755：第 6 步在 umask 077 下首建 /etc/caddy-fast 会得到 700，User=caddy 穿越不了
+# 目录、读不到 Caddyfile(permission denied)。env 文件本身仍 600 root(由 systemd 以 root 读)。
+chmod 755 /etc/caddy-fast /etc/caddy-fast/conf.d
 chown -R caddy:caddy /var/lib/caddy-fast
-# 独立配置根：主 Caddyfile 归本脚本所有，恒定只有一条 import(幂等重写)。
-printf 'import /etc/caddy-fast/conf.d/*.caddy\n' > /etc/caddy-fast/Caddyfile
+# 独立配置根：主 Caddyfile 归本脚本所有(幂等重写)。禁用 :80 自动重定向——快速通道
+# 走显式 https://<域>:<端口>，重定向无用，且在 :80 已有服务的 origin(如 self)会 bind 冲突。
+printf '{\n    auto_https disable_redirects\n}\nimport /etc/caddy-fast/conf.d/*.caddy\n' > /etc/caddy-fast/Caddyfile
 # DNS-01 站点块，按域名落盘(同一 origin 多通道互不覆盖)。bind 到 wg IP：快速端口只在隧道内
 # 可达，公网不暴露(DNS-01 签证书不需要任何入站)。令牌从环境读，不写死。
 cat > "/etc/caddy-fast/conf.d/$FDOM.caddy" <<CADDY
