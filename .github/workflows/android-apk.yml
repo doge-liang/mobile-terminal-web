@@ -1,8 +1,11 @@
 name: android-apk
 
-# 手动触发：填 release_tag 则构建签名 APK 并发布 GitHub Release；
-# 留空则只构建并上传为 workflow artifact（预检用）。
+# 两种触发方式：
+# 1. push tag android-v*：构建签名 APK 并发布同名 GitHub Release（日常发版）
+# 2. workflow_dispatch：填 release_tag 同上；留空只构建上传 artifact（预检用）
 on:
+  push:
+    tags: ['android-v*']
   workflow_dispatch:
     inputs:
       release_tag:
@@ -52,9 +55,11 @@ jobs:
       - name: Collect APK
         run: |
           TAG='${{ inputs.release_tag }}'
+          case "$GITHUB_REF" in refs/tags/*) TAG="${TAG:-$GITHUB_REF_NAME}" ;; esac
           NAME="DogeTerm-${TAG:-dev}.apk"
           cp android/app/build/outputs/apk/release/app-release.apk "$NAME"
           echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -62,11 +67,11 @@ jobs:
           path: ${{ env.APK_NAME }}
 
       - name: Publish GitHub Release
-        if: ${{ inputs.release_tag != '' }}
+        if: ${{ env.RELEASE_TAG != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ inputs.release_tag }}' "$APK_NAME" \
+          gh release create "$RELEASE_TAG" "$APK_NAME" \
             --target "$GITHUB_SHA" \
-            --title 'DogeTerm Android ${{ inputs.release_tag }}' \
+            --title "DogeTerm Android $RELEASE_TAG" \
             --notes '面板 + 终端的 Android WebView 壳应用。安装 APK 后首次打开，用白名单邮箱完成 Cloudflare Access OTP 登录即可。'
