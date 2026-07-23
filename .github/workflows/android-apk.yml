@@ -1,0 +1,72 @@
+name: android-apk
+
+# 手动触发：填 release_tag 则构建签名 APK 并发布 GitHub Release；
+# 留空则只构建并上传为 workflow artifact（预检用）。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag（如 android-v1.0.0），留空则只出 artifact'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 优先用 Secrets 里的固定密钥；未配置时降级为 CI 内一次性密钥
+      # （APK 可正常安装使用，但后续换固定密钥发版时手机需卸载重装一次）。
+      - name: Prepare signing keystore
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          KS="$RUNNER_TEMP/keystore.p12"
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$KS"
+            PASS="$KS_PASS"
+          else
+            PASS=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$KS" -storetype PKCS12 \
+              -storepass "$PASS" -alias term -keyalg RSA -keysize 2048 \
+              -validity 10950 -dname "CN=DogeTerm Android ephemeral"
+            echo "::warning::未配置签名 Secrets（ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD），本次使用一次性密钥签名"
+          fi
+          echo "ANDROID_KEYSTORE_FILE=$KS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Collect APK
+        run: |
+          TAG='${{ inputs.release_tag }}'
+          NAME="DogeTerm-${TAG:-dev}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$NAME"
+          echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dogeterm-apk
+          path: ${{ env.APK_NAME }}
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ inputs.release_tag }}' "$APK_NAME" \
+            --target "$GITHUB_SHA" \
+            --title 'DogeTerm Android ${{ inputs.release_tag }}' \
+            --notes '面板 + 终端的 Android WebView 壳应用。安装 APK 后首次打开，用白名单邮箱完成 Cloudflare Access OTP 登录即可。'

@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 签名信息全部经环境变量注入（CI 从 GitHub Secrets 解码 keystore）；
+// 未设置时仍可 assembleRelease，产物为未签名 APK，便于本地无密钥构建。
+def ksFile = System.getenv('ANDROID_KEYSTORE_FILE')
+
+android {
+    namespace 'uk.dogeliangspace.term'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'uk.dogeliangspace.term'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    if (ksFile) {
+        signingConfigs {
+            release {
+                storeFile file(ksFile)
+                storeType 'PKCS12'
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'term'
+                // PKCS12 的条目口令与库口令一致
+                keyPassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (ksFile) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
