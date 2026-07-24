@@ -429,3 +429,88 @@ html, body {
 .markdown-body pre { overflow-x: auto; }   /* 窄屏代码块横向可滚 */
 .markdown-body img { max-width: 100%; height: auto; }
 #box-banner { color: #3fb950; font-weight: 600; margin-left: 8px; font-size: 12px; }
+
+/* ---- composer 输入槽 ----
+   与工具栏同底色、终端上方的整行输入区。in-flow flex 子项:出现/增高时由
+   flex 布局自然压缩 #term,随后 fit() 重排行数——不做绝对定位悬浮,避免遮挡输出。 */
+#composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bar);
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+#composer[hidden] { display: none; }
+#cp-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-family: 'Maple Mono NF CN', ui-monospace, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.4;
+  resize: none;
+  max-height: 96px;   /* 约 4 行,再多内部滚动 */
+}
+#cp-input:focus { outline: none; border-color: var(--accent); }
+.cbtn {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+}
+.cbtn:active { background: var(--border); }
+.cbtn.accent { color: var(--accent); }
+
+/* 历史面板:composer 上方的 in-flow 抽屉,占位挤压终端(同软键盘语义),列表内滚 */
+#hist-sheet {
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  background: var(--bar);
+  border-top: 1px solid var(--border);
+  padding: 6px 8px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+#hist-sheet[hidden] { display: none; }
+.hs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #8b949e;
+  font-size: 11px;
+  padding: 2px 4px 6px;
+}
+.hs-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #21262d;
+  color: var(--fg);
+  font-family: 'Maple Mono NF CN', ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  padding: 9px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.hs-item:active { background: #21262d; }
+/* 固定项:左侧点缀色短边标记"钉住"态 */
+.hs-item.pinned { border-left: 2px solid var(--accent); padding-left: 6px; }
+.hs-empty { color: #8b949e; font-size: 12px; padding: 6px 8px 10px; }
