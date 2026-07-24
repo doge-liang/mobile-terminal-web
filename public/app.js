@@ -318,7 +318,7 @@
     fit.fit();
 
     const hooks = {
-      onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); term.focus(); },
+      onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); focusTerm(); },
       onData: (d) => term.write(d),
       onDown: () => {
         transport = null;
@@ -435,14 +435,14 @@
       : text ? `已复制${fromSel ? '选区' : '整屏'} ${text.length} 字`
       : '没有可复制的内容（未选中且屏幕为空）');
     lastSelection = ''; // consumed
-    term.focus();
+    focusTerm();
   }
 
   async function doPaste() {
     const text = await clipRead();
     if (text == null) { flashNote('粘贴失败：浏览器拒绝读剪贴板'); return; }
     if (text) send(text);
-    term.focus();
+    focusTerm();
   }
 
   // No custom Ctrl+C/Ctrl+V handling: Ctrl+C stays the terminal interrupt and
@@ -560,11 +560,29 @@
     }
   }
 
+  // 双指捏合调字号:记录起始指距与字号,移动中按比例映射到 setFont(9-24 夹取)。
+  // 与单指滑动滚屏互斥:第二根手指落下即取消滚动状态。
+  let pinch = null;
+  const touchDist = (ts) => Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY);
+
   termContainer.addEventListener('touchstart', (e) => {
-    touchPos = e.touches.length === 1 ? { y: e.touches[0].clientY } : null;
+    if (e.touches.length === 2) {
+      pinch = { d0: touchDist(e.touches), f0: fontSize };
+      touchPos = null;
+    } else {
+      pinch = null;
+      touchPos = e.touches.length === 1 ? { y: e.touches[0].clientY } : null;
+    }
   }, { capture: true, passive: true });
 
   termContainer.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      const target = clamp(Math.round(pinch.f0 * touchDist(e.touches) / pinch.d0), 9, 24);
+      if (target !== fontSize) { setFont(target); flashNote(`字号 ${target}px`, 800); }
+      e.preventDefault(); // 捏合只调字号,不触发浏览器缩放/滚动
+      e.stopPropagation();
+      return;
+    }
     if (!touchPos || e.touches.length !== 1) return;
     const t = e.touches[0];
     const screenEl = termContainer.querySelector('.xterm-screen');
@@ -580,7 +598,10 @@
     e.stopPropagation();
   }, { capture: true, passive: false });
 
-  termContainer.addEventListener('touchend', () => { touchPos = null; }, { capture: true, passive: true });
+  termContainer.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) pinch = null;
+    touchPos = null;
+  }, { capture: true, passive: true });
 
   // --- layout: track the visual viewport so the toolbar rides above the soft keyboard ---
   function applyViewport() {
@@ -645,6 +666,143 @@
   altBtn.addEventListener('click', () => {
     altActive = !altActive;
     altBtn.classList.toggle('active', altActive);
+  });
+
+  // --- composer 输入槽 ---
+  // 触屏的核心矛盾:键击昂贵、阅读廉价。composer 把输入契约从"逐键即发"改为
+  // "整行本地编辑后提交",配历史与固定命令;直接键入模式保留原有逐键路径(vim
+  // 等 TUI 用)。触屏默认 composer、桌面默认直接键入,选择持久化。
+  const composerEl = document.getElementById('composer');
+  const cpInput = document.getElementById('cp-input');
+  const modeBtn = document.getElementById('key-mode');
+  const histSheet = document.getElementById('hist-sheet');
+  const hsPinned = document.getElementById('hs-pinned');
+  const hsRecent = document.getElementById('hs-recent');
+  let composerMode = (localStorage.getItem('inputMode') || (isPhone ? 'composer' : 'direct')) === 'composer';
+
+  // composer 模式下不把焦点还给 xterm 的隐藏 textarea——那会弹软键盘。
+  // 各处"操作完回焦终端"统一走这里;直接键入模式行为不变。
+  function focusTerm() { if (!composerMode) term.focus(); }
+
+  // composer 模式下点终端区域只读输出、不弹键盘:xterm 一拿到焦点立即撤掉
+  termContainer.addEventListener('focusin', () => {
+    if (composerMode && term.textarea) term.textarea.blur();
+  });
+
+  const ICON_MODE_COMPOSER = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg>';
+  const ICON_MODE_DIRECT = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8h.01M12 12h.01M14 8h.01M16 12h.01M18 8h.01M6 8h.01M7 16h10m-9-4h.01"/><rect x="2" y="4" width="20" height="16" rx="2"/></svg>';
+
+  function applyInputMode() {
+    composerEl.hidden = !composerMode;
+    if (!composerMode) histSheet.hidden = true;
+    modeBtn.innerHTML = composerMode ? ICON_MODE_COMPOSER : ICON_MODE_DIRECT;
+    modeBtn.title = composerMode
+      ? '输入槽模式:整行编辑后发送。点按切换为直接键入(vim 等 TUI 用)'
+      : '直接键入模式:按键即发。点按切换为输入槽';
+    fit.fit();
+    sendResize();
+  }
+  modeBtn.addEventListener('click', () => {
+    composerMode = !composerMode;
+    localStorage.setItem('inputMode', composerMode ? 'composer' : 'direct');
+    applyInputMode();
+    if (composerMode) cpInput.focus();
+    else term.focus();
+  });
+  applyInputMode();
+
+  // 命令历史(最近 50 条去重)与固定列表,localStorage 持久化
+  const HIST_MAX = 50;
+  const loadList = (k) => { try { const a = JSON.parse(localStorage.getItem(k)); return Array.isArray(a) ? a : []; } catch { return []; } };
+  let cmdHistory = loadList('cmdHistory');
+  let cmdPinned = loadList('cmdPinned');
+  const saveHist = () => { localStorage.setItem('cmdHistory', JSON.stringify(cmdHistory)); localStorage.setItem('cmdPinned', JSON.stringify(cmdPinned)); };
+  function pushHistory(cmd) {
+    cmdHistory = [cmd, ...cmdHistory.filter((c) => c !== cmd)].slice(0, HIST_MAX);
+    saveHist();
+  }
+
+  let histNav = -1; // 桌面 ↑/↓ 翻历史的游标,-1 = 未在翻
+  function cpAutosize() {
+    cpInput.style.height = 'auto';
+    cpInput.style.height = Math.min(cpInput.scrollHeight, 96) + 'px';
+    fit.fit(); // composer 增高挤压终端,重排行数
+    sendResize();
+  }
+  cpInput.addEventListener('input', () => { histNav = -1; cpAutosize(); });
+
+  function cpSend() {
+    const text = cpInput.value;
+    // 终端的"回车"是 \r;多行内容(Shift+Enter)按逐行执行的粘贴语义转换
+    send(text.replace(/\n/g, '\r') + '\r');
+    if (text.trim()) pushHistory(text);
+    histNav = -1;
+    cpInput.value = '';
+    cpAutosize();
+    cpInput.focus(); // 键盘保持,连续输入
+  }
+  document.getElementById('cp-send').addEventListener('click', cpSend);
+  cpInput.addEventListener('keydown', (e) => {
+    // 中文输入法组合中的回车是"上屏"不是发送;组合期间一律放行默认行为
+    if (e.isComposing) return;
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cpSend(); return; }
+    if (e.key === 'ArrowUp' && (histNav >= 0 || !cpInput.value)) {
+      e.preventDefault();
+      if (histNav < cmdHistory.length - 1) { histNav++; cpInput.value = cmdHistory[histNav] || ''; cpAutosize(); }
+    } else if (e.key === 'ArrowDown' && histNav >= 0) {
+      e.preventDefault();
+      histNav--;
+      cpInput.value = histNav >= 0 ? cmdHistory[histNav] : '';
+      cpAutosize();
+    }
+  });
+
+  // 历史面板:固定在前、最近在后;点击回填输入槽,长按(550ms)切换固定
+  function histRow(cmd, pinned) {
+    const b = document.createElement('button');
+    b.className = 'hs-item' + (pinned ? ' pinned' : '');
+    b.textContent = cmd;
+    let timer = null;
+    let longpressed = false;
+    b.addEventListener('pointerdown', () => {
+      longpressed = false;
+      timer = setTimeout(() => {
+        longpressed = true;
+        if (pinned) cmdPinned = cmdPinned.filter((c) => c !== cmd);
+        else cmdPinned = [cmd, ...cmdPinned.filter((c) => c !== cmd)];
+        saveHist();
+        renderSheet();
+        flashNote(pinned ? '已取消固定' : '已固定到顶部');
+      }, 550);
+    });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) {
+      b.addEventListener(ev, () => clearTimeout(timer));
+    }
+    b.addEventListener('contextmenu', (e) => e.preventDefault()); // 长按不出系统菜单
+    b.addEventListener('click', () => {
+      if (longpressed) return; // 长按已消费本次按压
+      cpInput.value = cmd;
+      histSheet.hidden = true;
+      cpAutosize();
+      cpInput.focus();
+    });
+    return b;
+  }
+  function renderSheet() {
+    hsPinned.innerHTML = '';
+    hsRecent.innerHTML = '';
+    for (const c of cmdPinned) hsPinned.appendChild(histRow(c, true));
+    const recent = cmdHistory.filter((c) => !cmdPinned.includes(c));
+    for (const c of recent) hsRecent.appendChild(histRow(c, false));
+    if (!cmdPinned.length && !recent.length) {
+      hsRecent.innerHTML = '<div class="hs-empty">发送过的命令会出现在这里</div>';
+    }
+  }
+  document.getElementById('cp-hist').addEventListener('click', () => {
+    if (histSheet.hidden) renderSheet();
+    histSheet.hidden = !histSheet.hidden;
+    fit.fit();
+    sendResize();
   });
 
   // --- image upload ---
@@ -769,7 +927,7 @@
     const file = await shrinkImage(orig); // 返回 Blob（无 name)→ 服务端按 mime 生成名
     const p = await uploadFile(file, null);
     if (p) { send(p + ' '); flashNote('已插入图片路径'); }
-    term.focus();
+    focusTerm();
   }
 
   const imgInput = document.getElementById('img-input');
@@ -787,7 +945,7 @@
       if (p) send(p + ' '); // 把落地路径打进终端
     }
     fileInput.value = '';
-    term.focus();
+    focusTerm();
   });
 
   // clipboard button: mobile long-press paste menus don't hand images to web

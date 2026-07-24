@@ -37,7 +37,20 @@
       </div>
     </div>
     <div id="term"></div>
+    <div id="hist-sheet" hidden>
+      <div class="hs-head"><span>命令历史</span><span class="hs-hint">长按可固定 / 取消固定</span></div>
+      <div id="hs-pinned"></div>
+      <div id="hs-recent"></div>
+    </div>
+    <div id="composer" hidden>
+      <button id="cp-hist" class="cbtn" title="历史与固定命令"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9a9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5m4-1v5l4 2"/></svg></button>
+      <textarea id="cp-input" rows="1" enterkeyhint="send" autocapitalize="off"
+                autocomplete="off" autocorrect="off" spellcheck="false"
+                placeholder="输入命令，回车发送"></textarea>
+      <button id="cp-send" class="cbtn accent" title="发送"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904zM6 12h16"/></svg></button>
+    </div>
     <div id="toolbar">
+      <button id="key-mode" class="key wide" title="切换输入模式"></button>
       <button data-seq="\x1b" class="key wide">Esc</button>
       <button id="key-ctrl" class="key mod">Ctrl</button>
       <button data-seq="\t" class="key">Tab</button>
