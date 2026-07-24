@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { safeBasename, uniqueName } = require('./lib/upload-paths');
@@ -114,6 +114,19 @@ function sanitizeSession(name) {
 function clampCols(v) { return Math.max(2, Math.min(500, parseInt(v, 10) || 80)); }
 function clampRows(v) { return Math.max(2, Math.min(300, parseInt(v, 10) || 24)); }
 
+// OSC 133 shell 集成:新建的 tmux 会话用带标记钩子的 bash 启动(见 shell/ 内注释)。
+// allow-passthrough 是 tmux>=3.3 选项,老版本传入会让整条链式命令报错、attach 失败,
+// 故启动时探测一次;探测失败或 rcfile 缺失则完全退回旧行为(前端无标记时自动降级)。
+const SI_RCFILE = path.join(__dirname, 'shell', 'mt-shell-integration.bash');
+const SI_ENABLED = (() => {
+  if (!fs.existsSync(SI_RCFILE)) return false;
+  try {
+    const m = execFileSync('tmux', ['-V'], { timeout: 3000 }).toString().match(/(\d+)\.(\d+)/);
+    return !!m && (+m[1] > 3 || (+m[1] === 3 && +m[2] >= 3));
+  } catch { return false; }
+})();
+const SI_SHELL = `bash --rcfile ${SI_RCFILE}`;
+
 function spawnTmux(session, cols, rows, box) {
   // "; set-option mouse on" runs after attach: wheel reports then scroll tmux's
   // own scrollback (copy-mode) — that's how touch scrolling reaches history
@@ -125,8 +138,16 @@ function spawnTmux(session, cols, rows, box) {
     ? buildBoxTmuxArgv(box.name, box.path,
         box.nix ? nixShellCommand(box.path, fs.existsSync(path.join(box.path, 'flake.nix'))) : null)
     : ['new-session', '-A', '-s', session,
+       // 新建时窗口 0 跑集成 shell;-A 走 attach 路径时该参数被 tmux 忽略
+       ...(SI_ENABLED ? [SI_SHELL] : []),
        ';', 'set-option', 'mouse', 'on',
-       ';', 'set-option', '-g', 'set-clipboard', 'on'];
+       ';', 'set-option', '-g', 'set-clipboard', 'on',
+       ...(SI_ENABLED ? [
+         // passthrough 放行 DCS 包裹的 OSC 133;default-command 让本会话
+         // 之后新开的窗口也带集成(旧会话已运行的 shell 不受影响,自然降级)
+         ';', 'set-option', '-g', 'allow-passthrough', 'on',
+         ';', 'set-option', '-t', session, 'default-command', SI_SHELL,
+       ] : [])];
   return pty.spawn('tmux', argv, {
     name: 'xterm-256color',
     cols,
