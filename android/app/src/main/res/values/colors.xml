@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与站点 style.css 的 bg / accent 变量一致 -->
+    <color name="bg">#0d1117</color>
+    <color name="accent">#58a6ff</color>
+</resources>
