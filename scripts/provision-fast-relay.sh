@@ -668,16 +668,25 @@ fi
 rm -f "$DROPIN.prev"
 
 # 运行态断言：reload 后 master 是否真的 listen 了 FPORT(nginx -t 只验语法，不证 listen)。
+# `nginx -s reload` 发完 SIGHUP 即返回,不等 worker 重绑定——立即检查有竞态(DMIT-HK01
+# 踩实:脚本判失败,半秒后端口自己起来了),故轮询最多 5s。
 # 仅当本次新装了动态模块才兜底 restart(SIGHUP 不加载新模块)。注意 restart 并非 graceful，
 # 会掐断本机存量连接(80/xray)——这是模块首装的一次性代价；其余情况 restart 也救不了
 # (多半是端口被别的进程占用)，直接报错交人工。
-if ! ss -ltnH "sport = :$FPORT" 2>/dev/null | grep -q .; then
-  if [ -n "$MODFILE" ]; then
-    systemctl restart nginx || true
-    sleep 1
-  fi
-  ss -ltnH "sport = :$FPORT" 2>/dev/null | grep -q . \
-    || { echo "FAST_PORT_NOT_LISTENING: reload 后 :$FPORT 仍未监听。可查：该端口是否被其它进程占用(ss -ltnp)。" >&2; exit 1; }
+listen_ok() { ss -ltnH "sport = :$FPORT" 2>/dev/null | grep -q .; }
+lok=0
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  if listen_ok; then lok=1; break; fi
+  sleep 0.5
+done
+if [ "$lok" != 1 ] && [ -n "$MODFILE" ]; then
+  systemctl restart nginx || true
+  sleep 1
+  if listen_ok; then lok=1; fi
+fi
+if [ "$lok" != 1 ]; then
+  echo "FAST_PORT_NOT_LISTENING: reload 后等 5s :$FPORT 仍未监听。可查：该端口是否被其它进程占用(ss -ltnp)。" >&2
+  exit 1
 fi
 echo OK
 REMOTE
