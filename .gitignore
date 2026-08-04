@@ -8,3 +8,4 @@ box/env
 box/nodes
 .deploy-prev.tgz
 docs/superpowers/
+panel/wrangler.prod.toml
