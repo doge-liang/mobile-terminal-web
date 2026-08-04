@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { execFile, execFileSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
@@ -14,7 +15,11 @@ const { resolveDeletable } = require('./lib/delete-guard');
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
 const HOSTS = (process.env.HOST || '127.0.0.1').split(',').map((h) => h.trim()).filter(Boolean);
-const SHELL_CWD = process.env.SHELL_CWD || process.env.HOME || '/root';
+// systemd 不会自动给服务设 HOME(单元里也没写),而 ~/.profile、~/.bashrc 这类文件
+// 普遍写着 `. "$HOME/xxx"`——HOME 为空就拼成 /xxx 并在每个新 shell 报错。不猜 /root:
+// 从 passwd 取真实家目录,以服务实际运行的身份为准。
+const HOME_DIR = process.env.HOME || os.userInfo().homedir;
+const SHELL_CWD = process.env.SHELL_CWD || HOME_DIR;
 const DEFAULT_SESSION = process.env.TMUX_SESSION || 'mobile';
 
 // Cloudflare Access JWT verification (defense in depth behind Access).
@@ -143,6 +148,10 @@ function spawnTmux(session, cols, rows, box) {
        ...(SI_ENABLED ? [SI_SHELL] : []),
        ';', 'set-option', 'mouse', 'on',
        ';', 'set-option', '-g', 'set-clipboard', 'on',
+       // 新起的 tmux server 会继承下面 pty 环境里的 HOME;但已经在跑的 server 是
+       // 早先由无 HOME 的服务拉起来的,它派生的新窗口仍旧没有 HOME——补这一句把
+       // 存量 server 也修好(值相同则是空操作)。
+       ';', 'set-environment', '-g', 'HOME', HOME_DIR,
        ...(SI_ENABLED ? [
          // passthrough 放行 DCS 包裹的 OSC 133;default-command 让本会话
          // 之后新开的窗口也带集成(旧会话已运行的 shell 不受影响,自然降级)
@@ -154,7 +163,7 @@ function spawnTmux(session, cols, rows, box) {
     cols,
     rows,
     cwd: SHELL_CWD,
-    env: { ...process.env, TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
+    env: { ...process.env, HOME: HOME_DIR, TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
   });
 }
 
