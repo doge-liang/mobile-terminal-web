@@ -131,6 +131,10 @@ wrangler deploy
 
 客户端把实测 RTT 每 60 秒上报一次（页面关闭时 sendBeacon 补报）：`POST /t/metrics`，服务端算好 min/p50/p95/max/avg 追加到 `metrics/latency.jsonl`（10MB 轮转，git 忽略），并向 journal 打 `[metric]` 摘要行。聚合查询：`GET /t/metrics/summary?hours=24`，按"入口域名 × 传输方式"分组，对比不同通道/传输的真实延迟与重连次数。
 
+## Android 客户端
+
+`android/` 提供一个零依赖的 WebView 壳应用（DogeTerm），启动即加载面板并可进入各节点终端，Access 登录、文件上传/下载均在应用内完成。APK 由 GitHub Actions 云端构建签名，产物见 [Releases](../../releases)。构建与签名细节见 [android/README.md](android/README.md)。
+
 ## 许可
 
 MIT

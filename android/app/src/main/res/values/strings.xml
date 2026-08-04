@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DogeTerm</string>
+    <!-- 应用首页：启动面板，从这里进入各节点终端与沙盒控制台 -->
+    <string name="home_url" translatable="false">https://panel.doge-liang-space.uk/</string>
+    <string name="file_chooser_title">选择文件</string>
+    <string name="download_started">已开始下载，见通知栏</string>
+    <string name="download_need_permission">需要存储权限才能下载文件</string>
+</resources>
