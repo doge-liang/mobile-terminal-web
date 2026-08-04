@@ -24,17 +24,25 @@ git/gh 在本环境须先 `export HOME=/root`,否则读不到凭证。`main` 受
 | 目录 | 是什么 | 怎么上线 |
 |---|---|---|
 | `server.js` + `lib/` + `public/` | 节点上的终端服务(Node,systemd) | `scripts/deploy.sh` |
-| `panel/` | 聚合多节点的 Cloudflare Worker | `cd panel && wrangler deploy` |
+| `panel/` | 聚合多节点的 Cloudflare Worker | `cd panel && wrangler deploy --config wrangler.prod.toml` |
 | `android/` | DogeTerm WebView 壳 | 推 `android-v*` tag,或 `gh workflow run android-apk.yml -f release_tag=android-v1.0.x` |
 | `box/` | agent 沙盒 CLI 的**快照**(见下) | 不从这里上线 |
 
-`scripts/deploy.sh` 只同步白名单 `server.js lib public package.json package-lock.json`——`box/`、`panel/`、`android/`、`test/` 都不随它走;`.auth-secret`、`metrics/`、每机独立编译的 `node_modules/` 一律不碰。同步前打 `.deploy-prev.tgz` 快照,校验/重启/健康检查任一步失败自动回滚。
+`scripts/deploy.sh` 只同步白名单 `server.js lib public shell package.json package-lock.json`——`box/`、`panel/`、`android/`、`test/` 都不随它走;`.auth-secret`、`metrics/`、每机独立编译的 `node_modules/` 一律不碰。同步前打 `.deploy-prev.tgz` 快照,校验/重启/健康检查任一步失败自动回滚。
+
+**新增顶层目录必须同步这一行白名单**,否则该目录在节点上根本不存在。已经踩过一次:`shell/`(OSC 133 集成的 rcfile)漏进白名单,节点上 `SI_ENABLED` 恒为 false,块流静默降级成空面板,前端看不出任何异常。
 
 `release_tag` 留空的手动派发只出 artifact,不建 Release;版本号在 `android/app/build.gradle` 手动 +1。
 
 `box/` 与节点上实际安装的 `/opt/box`(命令 `ag-box`)已经分叉——已核实 `mounts.js`、`runtime.js` 不同,且 `/opt/box/lib` 多出 `lsjson.js`。本目录的用途是给 `test/box-*.test.js` 提供被测纯函数、并记录节点侧 box API 的契约;**改这里不会影响装好的 `ag-box`**,后者的规范源在独立仓 agent-box。
 
-`panel/src/worker.js` 可能落后于生产 Worker(历史上有未提交回仓的改动)。在 `panel/` 下 `wrangler deploy` 前,先把生产版本拉下来与仓库版对比,否则会覆盖线上改动。
+面板的仓库版与生产版曾长期分叉(生产带快速通道按钮 + 硬编码 Access 配置,从未提交回仓),**2026-08-04 已关闭**:生产跑的就是 `panel/src/worker.js`,配置改从 env 读。三件事仍要记住:
+
+- **两份 wrangler 配置**。仓库里的 `wrangler.toml` 是给开源使用者的占位符模板,照它部署会把 KV id、自定义域、Access 团队域全写错。真实配置在 `panel/wrangler.prod.toml`(已 gitignore),部署须 `--config` 指定。
+- **`PANEL_AUD` 是 secret,且顺序要紧**。它为空时 `verifyAccess` 无条件返回 `true`,`/api/*` 停止校验 Access JWT。新环境要先 `wrangler secret put PANEL_AUD` 再 deploy。`SVC_TOKEN_ID`/`SVC_TOKEN_SECRET` 同为 secret,`wrangler deploy` 不会动它们。
+- **`FAST_SELF_URL` 留空则「高速」按钮消失**。KV 里并没有持久化 `fastUrl`(已核实),按钮全靠这个 env 值在内存回填。
+
+生产仍可能被旁路修改(历史上就是经 Cloudflare API 直传的),部署前把线上版本拉下来与仓库版对比仍是稳妥做法。回滚可用 Cloudflare 保留的版本历史。
 
 ## 架构要点
 
