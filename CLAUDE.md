@@ -56,7 +56,9 @@ git/gh 在本环境须先 `export HOME=/root`,否则读不到凭证。`main` 受
 
 `verifyAuth()` 接受两种凭证:主域名的 Cloudflare Access JWT,或快速通道域名(`FAST_HOST`)的 HMAC 签名 Cookie。Cookie **只能**经 `/pair` 签发,而 `/pair` 本身只认 JWT——所以 Cloudflare Access 的邮箱白名单始终是两条通道唯一的准入闸。配对链接 60 秒、单次有效(`usedPairIds`)。
 
-`.auth-secret` 是每节点独立的 HMAC 密钥,**绝不可跨节点复制**;删掉它并重启即吊销全部快速通道设备。
+快速通道可池化(Phase 2,纯逻辑在 `lib/fast-pool.js`):`FAST_HOST` 收逗号分隔多值(首项为 `/pair` 默认签发目标,`?host=` 仅白名单命中才生效);`FAST_POOL` 是池成员 origin 列表,驱动 `/fast` 选路页(主域提供,不经池子)、`/net/pool`、CSP connect-src 扩展与前端测速/劣化切换;`FAST_COOKIE_DOMAIN` 使配对 Cookie 带 `Domain=` 全池共享——但仅当它是认领请求 Host 的后缀,遗留单通道域名自动回落 host-only。三者全缺省 = Phase 1 单通道行为。`/net/probe` 免鉴权,只回 204。
+
+`.auth-secret` 是每节点独立的 HMAC 密钥,**绝不可跨节点复制**;删掉它并重启即吊销全部快速通道设备。Cookie 的 HMAC 不绑 Host,故同一节点的多条通道天然互认——池共享的边界就是节点边界。
 
 服务令牌身份(JWT 带 `common_name`,面板 Worker 用)由 `serviceAuthAllowed` 限死在 `/t/box/*`,且须命中 `BOX_CTRL_CN` 白名单;人类身份不归它管。
 
