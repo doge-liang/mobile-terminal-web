@@ -319,7 +319,10 @@
 
     const hooks = {
       onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); focusTerm(); },
-      onData: (d) => term.write(d),
+      onData: (d) => {
+        if (blockCap) { try { blockCap.feed(d); } catch { /* 解析器异常绝不拖累终端 */ } }
+        term.write(d);
+      },
       onDown: () => {
         transport = null;
         reconnects++;
@@ -805,6 +808,98 @@
     sendResize();
   });
 
+  // --- 命令块(V1 块流) ---
+  // OSC 133 标记由 shell 集成注入(见 shell/ 与 server.js spawnTmux):流在喂给
+  // xterm 前先经解析器捕获——B→C 命令回显、C→D 输出、D 带退出码收束成块。
+  // 无标记的旧会话/盒会话 sawMarkers 恒假,面板给出空态提示,终端行为不变。
+  const blockPanel = document.getElementById('block-panel');
+  const bpList = document.getElementById('bp-list');
+  const blockView = document.getElementById('block-view');
+  const bvTitle = document.getElementById('bv-title');
+  const bvPre = document.querySelector('#bv-body pre');
+
+  const newCapture = () => {
+    const c = window.MTBlocks ? MTBlocks.createCapture() : null;
+    if (c) c.onBlock(() => { if (!blockPanel.hidden) renderBlocks(); }); // 面板开着时实时刷新
+    return c;
+  };
+  let blockCap = newCapture();
+
+  function fmtDur(ms) {
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${Math.floor(ms / 60000)}m${String(Math.round((ms % 60000) / 1000)).padStart(2, '0')}s`;
+  }
+  function fmtClock(t) {
+    const d = new Date(t);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function openBlockView(b) {
+    bvTitle.textContent = b.cmd || '(无命令)';
+    bvPre.textContent = (MTBlocks.coalesceLines(b.out) || '(无输出)')
+      + (b.truncated ? '\n…(输出过长，已截断)' : '');
+    document.getElementById('bv-copy-cmd').onclick = () =>
+      clipWrite(b.cmd).then((ok) => flashNote(ok ? '已复制命令' : '复制失败'));
+    document.getElementById('bv-copy-out').onclick = () =>
+      clipWrite(MTBlocks.coalesceLines(b.out)).then((ok) => flashNote(ok ? '已复制输出' : '复制失败'));
+    blockView.hidden = false;
+  }
+
+  function bpRow(st, stClass, cmd, meta, onTap) {
+    const row = document.createElement('div');
+    row.className = 'sp-row bp-row';
+    const pick = document.createElement('button');
+    pick.className = 'sp-pick';
+    const stEl = document.createElement('span');
+    stEl.className = `bp-st ${stClass}`;
+    stEl.textContent = st;
+    const cmdEl = document.createElement('span');
+    cmdEl.className = 'bp-cmd';
+    cmdEl.textContent = cmd;
+    const metaEl = document.createElement('span');
+    metaEl.className = 'sp-meta';
+    metaEl.textContent = meta;
+    pick.append(stEl, cmdEl, metaEl);
+    if (onTap) pick.addEventListener('click', onTap);
+    row.appendChild(pick);
+    return row;
+  }
+
+  function renderBlocks() {
+    bpList.innerHTML = '';
+    if (!blockCap) { bpList.innerHTML = '<div class="sp-empty">当前浏览器不支持块捕获</div>'; return; }
+    if (blockCap.active) {
+      bpList.appendChild(bpRow('●', 'run', blockCap.active.cmd || '(运行中)',
+        `${fmtDur(Date.now() - blockCap.active.t0)}…`, null));
+    }
+    const bs = blockCap.blocks;
+    for (let i = bs.length - 1; i >= 0; i--) {
+      const b = bs[i];
+      const ok = b.exit === 0;
+      bpList.appendChild(bpRow(
+        ok ? '✓' : `✗${b.exit ?? ''}`, ok ? 'ok' : 'err',
+        b.cmd || '(无命令)', `${fmtDur(b.t1 - b.t0)} · ${fmtClock(b.t1)}`,
+        () => openBlockView(b)));
+    }
+    if (!blockCap.active && !bs.length) {
+      bpList.innerHTML = `<div class="sp-empty">${blockCap.sawMarkers
+        ? '暂无命令块——发一条命令试试'
+        : '此会话没有块标记：新建的会话才有；旧会话在其中执行 exec bash 后生效'}</div>`;
+    }
+  }
+
+  document.getElementById('btn-blocks').addEventListener('click', () => {
+    document.getElementById('session-panel').hidden = true;
+    document.getElementById('file-panel').hidden = true;
+    renderBlocks();
+    blockPanel.hidden = false;
+  });
+  document.getElementById('bp-close').addEventListener('click', () => { blockPanel.hidden = true; });
+  blockPanel.addEventListener('click', (e) => { if (e.target === blockPanel) blockPanel.hidden = true; });
+  document.getElementById('bv-close').addEventListener('click', () => { blockView.hidden = true; });
+  blockView.addEventListener('click', (e) => { if (e.target === blockView) blockView.hidden = true; });
+
   // --- image upload ---
   // A browser's clipboard/photo library can't reach the server's clipboard, so
   // "paste image" shortcuts inside server-side TUIs can never see it. Instead we
@@ -1009,6 +1104,7 @@
     rememberSession(sessionName);
     if (transport) { const t = transport; transport = null; t.close(); }
     term.reset();
+    blockCap = newCapture(); // 换会话=换流,块从零捕获
     connect();
     closePanel();
   }

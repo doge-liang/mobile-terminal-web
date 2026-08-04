@@ -79,7 +79,7 @@ html, body {
    which was collapsing/garbling the grid until a refresh. */
 #sb-actions {
   display: grid;
-  grid-template-columns: repeat(5, auto);
+  grid-template-columns: repeat(6, auto);
   gap: 6px;
   flex: none;
 }
@@ -174,7 +174,8 @@ html, body {
 .key.danger { color: #f85149; }
 
 /* --- session panel (modal overlay) --- */
-#session-panel {
+#session-panel,
+#block-panel {
   position: fixed;
   inset: 0;
   z-index: 20;
@@ -184,7 +185,7 @@ html, body {
   padding: 12vh 16px 16px;
   background: rgba(1, 4, 9, 0.6);
 }
-#session-panel[hidden] { display: none; }
+#session-panel[hidden], #block-panel[hidden] { display: none; }
 .sp-box {
   width: 100%;
   max-width: 420px;
@@ -373,13 +374,14 @@ html, body {
 .sp-section::-webkit-scrollbar-track, .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
 .sp-section::-webkit-scrollbar-corner, .xterm-viewport::-webkit-scrollbar-corner { background: transparent; }
 
-/* ---- 文件预览层 ---- */
-#preview-panel {
+/* ---- 文件预览层(块输出查看 #block-view 同款呈现) ---- */
+#preview-panel,
+#block-view {
   position: fixed; inset: 0; z-index: 50;
   background: rgba(0, 0, 0, 0.5);
   display: flex; align-items: stretch; justify-content: center;
 }
-#preview-panel[hidden] { display: none; }
+#preview-panel[hidden], #block-view[hidden] { display: none; }
 .pv-box {
   display: flex; flex-direction: column;
   width: 100%; max-width: 900px; height: 100%;
@@ -514,3 +516,20 @@ html, body {
 /* 固定项:左侧点缀色短边标记"钉住"态 */
 .hs-item.pinned { border-left: 2px solid var(--accent); padding-left: 6px; }
 .hs-empty { color: #8b949e; font-size: 12px; padding: 6px 8px 10px; }
+
+/* ---- 命令块面板 ----
+   行首状态标:绿✓=退出 0、红✗+码=失败、蓝●=运行中;命令等宽截断,元信息靠右 */
+.bp-row .sp-pick { gap: 8px; justify-content: flex-start; }
+.bp-st { flex: none; font-size: 12px; font-weight: 700; min-width: 2em; text-align: center; }
+.bp-st.ok { color: #3fb950; }
+.bp-st.err { color: #f85149; }
+.bp-st.run { color: var(--accent); }
+.bp-cmd {
+  flex: 1; min-width: 0;
+  font-family: 'Maple Mono NF CN', ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bp-row .sp-meta { font-variant-numeric: tabular-nums; }
+/* 块输出正文:沿用 .pv-text 的等宽只读样式 */
+#bv-body pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5; }
