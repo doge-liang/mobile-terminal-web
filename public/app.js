@@ -1013,6 +1013,8 @@
   const FP_ICON_FILE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>';
   const FP_ICON_DL = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
   const FP_ICON_EYE = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+  const FP_ICON_RM = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 11v6m4-6v6m5-11v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  const FP_ICON_OK = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>';
   const FP_ICON_EYEOFF = '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>';
 
   // 系统下载:HEAD 预检通过才导航,避免出错时把 App 跳到裸 JSON 错误页
@@ -1029,6 +1031,57 @@
     } catch {
       flashNote('下载失败: 网络错误');
     }
+  }
+
+  // 删除:成功 { ok }、目录非空 { notEmpty, count }、其余 { error }
+  async function rmPath(abs, recursive) {
+    try {
+      const r = await fetchT('/t/rm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recursive ? { path: abs, recursive: true } : { path: abs }),
+      }, 20000);
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) return { ok: true };
+      if (r.status === 409) return { notEmpty: true, count: data.count || 0 };
+      return { error: data.error || `HTTP ${r.status}` };
+    } catch (e) {
+      return { error: e.name === 'AbortError' ? '超时' : '网络错误' };
+    }
+  }
+
+  // 行尾删除按钮:行内两段式确认(WebView 里 window.confirm 是否弹框不可靠,不依赖它)。
+  // 一点亮起确认态(5s 自动解除),二点真删;非空目录服务端回 409,再确认一次才递归。
+  function makeDeleteBtn(abs, name) {
+    const btn = document.createElement('button');
+    btn.className = 'fp-act fp-rm';
+    btn.title = '删除';
+    btn.innerHTML = FP_ICON_RM;
+    let stage = 0; // 0=待命 1=已确认删除 2=已确认递归删除
+    let timer = null;
+    let busy = false;
+    const disarm = () => { clearTimeout(timer); stage = 0; btn.classList.remove('armed'); btn.innerHTML = FP_ICON_RM; };
+    const arm = (next, note) => {
+      clearTimeout(timer);
+      stage = next;
+      btn.classList.add('armed');
+      btn.innerHTML = FP_ICON_OK;
+      flashNote(note, 5000);
+      timer = setTimeout(disarm, 5000);
+    };
+    btn.addEventListener('click', async () => {
+      if (busy) return;
+      if (stage === 0) { arm(1, `再点一次删除「${name}」`); return; }
+      clearTimeout(timer);
+      busy = true;
+      const res = await rmPath(abs, stage === 2);
+      busy = false;
+      if (res.notEmpty) { arm(2, `「${name}」非空（${res.count} 项），再点一次确认递归删除`); return; }
+      disarm();
+      if (res.ok) { flashNote(`已删除 ${name}`); fpLoad(fpCwd); }
+      else flashNote(`删除失败: ${res.error}`);
+    });
+    return btn;
   }
 
   // 点文件:取内容,按服务端返回的 type 分派预览 / 下载
@@ -1160,12 +1213,13 @@
         pick.addEventListener('click', () => openFile(abs, e.name));
         // 行尾下载图标:与预览解耦,任何文件一点即下载(icon 是可信静态 SVG 常量)
         const dl = document.createElement('button');
-        dl.className = 'fp-dl';
+        dl.className = 'fp-act fp-dl';
         dl.title = '下载';
         dl.innerHTML = FP_ICON_DL;
         dl.addEventListener('click', () => downloadFile(abs));
         row.appendChild(dl);
       }
+      row.appendChild(makeDeleteBtn(abs, e.name)); // 目录与文件都可删,确认在按钮内两段式完成
       fpList.appendChild(row);
     }
     return true; // 成功加载,供打开时判断记忆目录是否仍有效
