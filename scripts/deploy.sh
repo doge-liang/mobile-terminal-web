@@ -25,7 +25,9 @@ NODES_FILE="${NODES_FILE:-$REPO/scripts/nodes}"
 SERVICE="${SERVICE:-mobile-terminal}"
 
 # 白名单:恰好是应用运行时需要的东西，别的都不发。
-WHITELIST=(server.js lib public package.json package-lock.json)
+# shell/ 是 OSC 133 集成的 rcfile：server.js 启动时按 <部署目录>/shell/ 探测它，
+# 缺了则 SI_ENABLED 为 false、块流静默降级——不发它等于该功能在节点上不存在。
+WHITELIST=(server.js lib public shell package.json package-lock.json)
 
 DEPS=0; DRYRUN=""
 for a in "$@"; do
