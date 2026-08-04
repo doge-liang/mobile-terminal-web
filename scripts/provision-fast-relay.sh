@@ -15,12 +15,23 @@
 #   - 同一 JUMP 服务多个 ORIGIN —— 每个 ORIGIN 须用独立 WG_IF(建议 wgfast-<origin>)、独立
 #     子网与独立 FAST_PORT；WG_IF 按 ORIGIN 取名并在其所有 JUMP 上保持一致。脚本检测到
 #     冲突会明确中止(JUMP_WG_ADDR_MISMATCH / FAST_PORT_TAKEN)，不会静默覆盖既有通道。
+#   - 池化(Phase-2)：POOL_DOMAIN=t2.example.com 时进入池模式——
+#       * ORIGIN env 的 FAST_HOST 改为「追加成员」而非覆盖，另维护 FAST_POOL(完整
+#         origin 列表,供前端测速选路)与 FAST_COOKIE_DOMAIN(=POOL_DOMAIN,配对 Cookie
+#         全池共享,切通道免重配对)。server.js 须为 Phase-2 之后的版本(旧版把多值
+#         FAST_HOST 当单主机名,/pair 会坏)——先 deploy 新代码再跑本脚本。
+#       * JUMP 的 nginx L4 透传是 SNI 无关的:若该 JUMP 已有指向同一 ORIGIN:PORT 的
+#         drop-in(如遗留域名的),新域名直接复用,不再建重复 listener(否则 duplicate
+#         listen 必炸)。DOWN 时若透传/wg 仍被其它域名共用,只删自己的部分。
+#       * FAST_DOMAIN 必须是 POOL_DOMAIN 的子域(如 dmit-01.t2.example.com)。
 #
 # 用法：
 #   CF_DNS_TOKEN=<zone:read+dns:edit 令牌> scripts/provision-fast-relay.sh \
 #       [JUMP_SSH] [JUMP_PUBIP] [ORIGIN_SSH] [ORIGIN_PUBIP] \
 #       [ORIGIN_WG_IP] [JUMP_WG_IP] [WG_SUBNET] [FAST_DOMAIN] [FAST_PORT] [CF_ZONE]
 #   位置参数可省(用 Phase-1 默认值)，也可用同名环境变量覆盖。
+#   池化追加成员(Phase-2)：POOL_DOMAIN=t2.<zone> FAST_DOMAIN=<jump 别名>.t2.<zone> ...
+#     (先 deploy Phase-2 版 server.js 到 ORIGIN，再跑本脚本；BW-02 复活后照此一条命令追加)
 #   拆除某条快速通道：DOWN=1 ...(同一组参数) —— 见文末 teardown。
 #
 # Phase-1 目标(默认值)：ORIGIN=term2(racknerd-13d12ee/192.255.136.151)，
@@ -55,6 +66,7 @@ FAST_PORT="${9:-${FAST_PORT:-2096}}"
 CF_ZONE="${10:-${CF_ZONE:-doge-liang-space.uk}}"
 
 # 次级参数(一般不用改)
+POOL_DOMAIN="${POOL_DOMAIN:-}"      # 池共享父域(如 t2.example.com);设了即池模式,见文件头
 WG_IF="${WG_IF:-wgfast}"            # 源站 wg 接口名，务必 != wg1(self 占用)
 WG_PORT="${WG_PORT:-51820}"         # 源站 wg 监听 UDP 端口(中转机主动发起，不监听)
 ENABLE_UFW="${ENABLE_UFW:-0}"       # 1=在源站启用 ufw(先放行 SSH)。姿态变更，须先确认主路径不是直连入站，见文末风险。
@@ -84,6 +96,13 @@ command -v ssh  >/dev/null 2>&1 || die "控制机缺 ssh。"
 case "$FAST_DOMAIN" in ''|*[!a-zA-Z0-9.-]*) die "FAST_DOMAIN 含非法字符：$FAST_DOMAIN" ;; esac
 case "$FAST_PORT"   in ''|*[!0-9]*)         die "FAST_PORT 须为纯数字：$FAST_PORT" ;; esac
 case "$WG_IF"       in ''|*[!a-zA-Z0-9_-]*) die "WG_IF 含非法字符：$WG_IF" ;; esac
+if [ -n "$POOL_DOMAIN" ]; then
+  case "$POOL_DOMAIN" in *[!a-zA-Z0-9.-]*) die "POOL_DOMAIN 含非法字符：$POOL_DOMAIN" ;; esac
+  case "$FAST_DOMAIN" in
+    *".$POOL_DOMAIN") : ;;
+    *) die "池模式下 FAST_DOMAIN($FAST_DOMAIN) 必须是 POOL_DOMAIN($POOL_DOMAIN) 的子域。" ;;
+  esac
+fi
 
 # Cloudflare 区 id（DOWN 与正常路径都要）。
 cf_zone_id() { cf_api "https://api.cloudflare.com/client/v4/zones?name=$CF_ZONE" | jq -r '.result[0].id // empty'; }
@@ -130,7 +149,20 @@ fi
 ENVF=/etc/default/mobile-terminal
 if [ -f "$ENVF" ]; then
   BAK=$(mktemp); cp -a "$ENVF" "$BAK"
-  if grep -qxF "FAST_HOST=$FDOM:$FPORT" "$ENVF"; then sed -i '/^FAST_HOST=/d' "$ENVF"; fi
+  # FAST_HOST:从列表摘除本成员(单值恰为本成员时=删键,与旧行为一致)。
+  cur=$(sed -n 's/^FAST_HOST=//p' "$ENVF" | head -1)
+  if [ -n "$cur" ]; then
+    new=$(printf '%s' "$cur" | tr ',' '\n' | grep -vxF "$FDOM:$FPORT" | paste -sd, -) || new=""
+    if [ -z "$new" ]; then sed -i '/^FAST_HOST=/d' "$ENVF"
+    elif [ "$new" != "$cur" ]; then sed -i "s|^FAST_HOST=.*|FAST_HOST=$new|" "$ENVF"; fi
+  fi
+  # FAST_POOL 同步摘除;池清空时连共享 Cookie 域一起摘。
+  curp=$(sed -n 's/^FAST_POOL=//p' "$ENVF" | head -1)
+  if [ -n "$curp" ]; then
+    newp=$(printf '%s' "$curp" | tr ',' '\n' | grep -vxF "https://$FDOM:$FPORT" | paste -sd, -) || newp=""
+    if [ -z "$newp" ]; then sed -i '/^FAST_POOL=/d; /^FAST_COOKIE_DOMAIN=/d' "$ENVF"
+    elif [ "$newp" != "$curp" ]; then sed -i "s|^FAST_POOL=.*|FAST_POOL=$newp|" "$ENVF"; fi
+  fi
   cur=$(sed -n 's/^HOST=//p' "$ENVF" | head -1)
   if [ -n "$cur" ] && ! grep -q '^\[Peer\]' "$CONF" 2>/dev/null; then
     # grep -vxF 全被过滤时退出 1，pipefail 会中止 teardown —— 用 || new="" 兜底，交给下一行回落。
@@ -144,19 +176,27 @@ fi
 echo OK
 REMOTE
 
-  log "  JUMP：删 nginx stream drop-in + 拆 wg 接口(中转机侧接口专属，可整拆)"
-  SSH "$JUMP_SSH" bash -s -- "$WG_IF" "$FAST_DOMAIN" <<'REMOTE'
+  log "  JUMP：删 nginx stream drop-in + 拆 wg 接口(仍被其它域名共用则保留)"
+  SSH "$JUMP_SSH" bash -s -- "$WG_IF" "$FAST_DOMAIN" "$ORIGIN_WG_IP" <<'REMOTE'
 set -euo pipefail
-IF="$1"; FDOM="$2"
+IF="$1"; FDOM="$2"; OWGIP="$3"
 DROPIN="/etc/nginx/stream.d/term-fast-$FDOM.conf"
 if [ -f "$DROPIN" ]; then
   rm -f "$DROPIN"
   # 删 drop-in 后 nginx -t 通过才 reload；不通过不动运行态(极不可能，删文件而已)。
   if nginx -t >/dev/null 2>&1; then nginx -s reload || true; fi
+  # 注意:池化的 SNI 无关透传意味着别的池域名可能正骑在这个 drop-in 上。删掉后它们
+  # 的数据面即断,恢复=对任一池成员重跑 provision(无既有 listener 时会重建 drop-in)。
+  echo "NOTE: 已删 $DROPIN;若有池域名共用此透传,重跑 provision 可自愈。"
 fi
-# 中转机的 wgfast 接口是本快速通道专属，可整体拆(不影响 80/xray)。keys 保留供重建复用。
-wg-quick down "$IF" >/dev/null 2>&1 || true
-systemctl disable "wg-quick@$IF" >/dev/null 2>&1 || true
+# 共用守护:其余 drop-in 仍指向该 origin(池化同 IP 透传/其它域名)时,wg 接口还被
+# 用着,绝不拆;彻底无人用才整拆(不影响 80/xray)。keys 保留供重建复用。
+if grep -qsE "^[[:space:]]*proxy_pass[[:space:]]+$OWGIP:" /etc/nginx/stream.d/*.conf 2>/dev/null; then
+  echo "KEEP_WG: 其它 drop-in 仍指向 $OWGIP,wg $IF 保留不拆。"
+else
+  wg-quick down "$IF" >/dev/null 2>&1 || true
+  systemctl disable "wg-quick@$IF" >/dev/null 2>&1 || true
+fi
 echo OK
 REMOTE
 
@@ -360,9 +400,9 @@ printf 'CF_DNS_TOKEN=%s\n' "$CF_DNS_TOKEN" \
 
 # ── 7) ORIGIN：装带 cloudflare-dns 插件的 caddy-fast + DNS-01 快速块 + env 更新 ─
 log "[7/9] ORIGIN 装 caddy-fast(cloudflare-dns，独立路径) + 站点块(DNS-01, bind wg IP) + FAST_HOST/HOST"
-SSH "$ORIGIN_SSH" bash -s -- "$FAST_DOMAIN" "$FAST_PORT" "$ORIGIN_WG_IP" "$WG_IF" <<'REMOTE'
+SSH "$ORIGIN_SSH" bash -s -- "$FAST_DOMAIN" "$FAST_PORT" "$ORIGIN_WG_IP" "$WG_IF" "$POOL_DOMAIN" <<'REMOTE'
 set -euo pipefail
-FDOM="$1"; FPORT="$2"; OWGIP="$3"; IF="$4"
+FDOM="$1"; FPORT="$2"; OWGIP="$3"; IF="$4"; POOL="${5:-}"
 export DEBIAN_FRONTEND=noninteractive
 command -v curl >/dev/null 2>&1 || { apt-get update -qq >&2; apt-get install -y -qq curl >&2; }
 # 独立二进制 /usr/local/bin/caddy-fast：绝不占用 /usr/bin/caddy。既不覆盖机器上可能存在的
@@ -444,8 +484,27 @@ if [ ! -f "$ENVF" ]; then
 fi
 BAK="$ENVF.fastbak.$(date +%s)"
 cp -a "$ENVF" "$BAK"
-if grep -q '^FAST_HOST=' "$ENVF"; then
-  sed -i "s|^FAST_HOST=.*|FAST_HOST=$FDOM:$FPORT|" "$ENVF"   # 就地更新(改域名/端口也能收敛)
+if [ -n "$POOL" ]; then
+  # 池模式:FAST_HOST 追加成员(绝不覆盖既有列表);FAST_POOL/FAST_COOKIE_DOMAIN 同步。
+  cur=$(sed -n 's/^FAST_HOST=//p' "$ENVF" | head -1)
+  if [ -z "$cur" ]; then
+    echo "FAST_HOST=$FDOM:$FPORT" >> "$ENVF"
+  elif ! printf '%s' "$cur" | tr ',' '\n' | grep -qxF "$FDOM:$FPORT"; then
+    sed -i "s|^FAST_HOST=.*|FAST_HOST=$cur,$FDOM:$FPORT|" "$ENVF"
+  fi
+  curp=$(sed -n 's/^FAST_POOL=//p' "$ENVF" | head -1)
+  if [ -z "$curp" ]; then
+    echo "FAST_POOL=https://$FDOM:$FPORT" >> "$ENVF"
+  elif ! printf '%s' "$curp" | tr ',' '\n' | grep -qxF "https://$FDOM:$FPORT"; then
+    sed -i "s|^FAST_POOL=.*|FAST_POOL=$curp,https://$FDOM:$FPORT|" "$ENVF"
+  fi
+  if grep -q '^FAST_COOKIE_DOMAIN=' "$ENVF"; then
+    sed -i "s|^FAST_COOKIE_DOMAIN=.*|FAST_COOKIE_DOMAIN=$POOL|" "$ENVF"
+  else
+    echo "FAST_COOKIE_DOMAIN=$POOL" >> "$ENVF"
+  fi
+elif grep -q '^FAST_HOST=' "$ENVF"; then
+  sed -i "s|^FAST_HOST=.*|FAST_HOST=$FDOM:$FPORT|" "$ENVF"   # 单通道:就地更新(改域名/端口也能收敛)
 else
   echo "FAST_HOST=$FDOM:$FPORT" >> "$ENVF"
 fi
@@ -506,11 +565,20 @@ TS=$(date +%Y%m%d%H%M%S)
 
 # 端口冲突预检：FAST_PORT 已被其它通道的 drop-in 占用时给出可操作报错
 # (否则要到 nginx -t 才炸出 duplicate listen，信息晦涩且已写了半截)。
+# 例外(池化)：L4 透传 SNI 无关——既有 drop-in 若指向同一目标,新域名天然被它服务,
+# 直接复用,绝不能再建重复 listener。
 for f in /etc/nginx/stream.d/*.conf; do
   [ -e "$f" ] || continue
   [ "$f" = "$DROPIN" ] && continue
   if grep -qE "^[[:space:]]*listen[[:space:]]+$FPORT;" "$f"; then
-    echo "FAST_PORT_TAKEN: :$FPORT 已被 $f 占用(另一条通道)。同一中转机上每条通道须用不同 FAST_PORT。" >&2
+    if grep -qE "^[[:space:]]*proxy_pass[[:space:]]+$OWGIP:$FPORT;" "$f"; then
+      echo "SHARED_L4: 复用既有透传 $f (:$FPORT -> $OWGIP:$FPORT,SNI 无关),不建新 drop-in。" >&2
+      ss -ltnH "sport = :$FPORT" 2>/dev/null | grep -q . \
+        || { echo "FAST_PORT_NOT_LISTENING: 既有 drop-in 在盘上但 :$FPORT 未监听(nginx 配置未生效?)。" >&2; exit 1; }
+      echo OK
+      exit 0
+    fi
+    echo "FAST_PORT_TAKEN: :$FPORT 已被 $f 占用(指向其它目标)。同一中转机上每条通道须用不同 FAST_PORT。" >&2
     exit 1
   fi
 done

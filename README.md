@@ -52,7 +52,9 @@ sudo systemctl enable --now mobile-terminal
 | `MAIN_HOST` | `term.example.com` | 主域名，用于配对页跳转（**请设成你自己的**） |
 | `CF_ACCESS_TEAM_DOMAIN` | 空 | 如 `your-team.cloudflareaccess.com`；设置后开启 JWT 校验（留空=本地开发，跳过鉴权） |
 | `CF_ACCESS_AUD` | 空 | Access 应用的 Application Audience (AUD) Tag |
-| `FAST_HOST` | 空 | 可选，快速通道域名（见下方「快速通道」） |
+| `FAST_HOST` | 空 | 可选，快速通道域名；可逗号分隔多值（池化），首项为 `/pair` 默认签发目标（见下方「快速通道」） |
+| `FAST_POOL` | 空 | 可选，池成员完整 origin 列表（逗号分隔，如 `https://a.t2.example.com:2096,…`），供 `/fast` 选路页与前端测速/劣化切换 |
+| `FAST_COOKIE_DOMAIN` | 空 | 可选，池共享 Cookie 域（如 `t2.example.com`）；配对 Cookie 带 `Domain=` 后全池通用，切换通道免重配对 |
 | `AUTH_SECRET` | 自动生成 | 可选；留空则首启生成到 `.auth-secret`（每节点独立，**绝不可跨节点复制**） |
 
 ### Cloudflare 发布（Tunnel + Access）
@@ -116,6 +118,7 @@ wrangler deploy
 - **主通道** `term.<domain>`：经 Cloudflare Tunnel + Access（邮箱 OTP 白名单），任何网络可用
 - **快速通道**（可选，`FAST_HOST`，**端到端加密**）：为降低晚高峰经 Cloudflare 的延迟，可另建一条 DNS 直指跳板机、跳板上 nginx stream 做**纯 TCP 转发**（只搬密文、不持私钥）→ WireGuard → 本机终结 TLS 的旁路。浏览器到本机是一条完整 TLS 会话，中继即使被入侵也只见密文。此拓扑是可选优化，非必需
 - **白名单唯一准入**：快速通道凭证只能通过配对获得——在主域名打开 `/pair`（先过 Access 邮箱 OTP）→ 签发一次性配对链接（60 秒、单次有效）→ 跳转快速域名种下 HMAC 签名 Cookie（30 天、HttpOnly/Secure）。伪造、过期、重放均被拒绝。吊销全部设备：删除 `.auth-secret` 并重启
+- **通道池**（可选，Phase 2）：一台源站可挂多台跳板机（如 `dmit-01.t2.<domain>` 等共享父域的多条通道）。主域名 `/fast` 选路页并发测速全部成员、跳最快的一条（入口不依赖池内任一成员存活）；配对 Cookie 经 `FAST_COOKIE_DOMAIN` 全池共享；前端加载时测速改道（仅当前通道不通或明显更慢且尚未连上时），传输链连续失败时自动向存活成员切换（5 分钟限 2 次防振荡）。探测端点 `/net/probe` 免鉴权、仅回 204 无数据
 
 ## 传输协议
 

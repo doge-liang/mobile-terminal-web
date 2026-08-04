@@ -302,6 +302,106 @@
   }
 
   // ------------------------------------------------------------------
+  // 快速通道池:加载时并发测速选最快,传输链持续失败时向存活成员整页切换。
+  // 池表来自 /net/pool(连上后拉取,localStorage 缓存跨次访问可用);仅当
+  // 当前 origin 本身是池成员时才参与选路/切换——主域名(经 Cloudflare)不动。
+  // 配对 Cookie 带共享 Domain,切换 origin 免重配对。
+  // ------------------------------------------------------------------
+  const POOL_CACHE_KEY = 'mtwFastPool';
+  const POOL_SWITCHED_KEY = 'mtwPoolSwitched';       // sessionStorage:本标签页已自动改道过,不反复跳
+  const POOL_FAILOVER_TS_KEY = 'mtwPoolFailoverTs';  // sessionStorage:故障转移时间戳,限频防池内振荡
+
+  let poolMembers = (() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(POOL_CACHE_KEY) || 'null');
+      return Array.isArray(v && v.pool) ? v.pool : [];
+    } catch { return []; }
+  })();
+  const inPool = () => poolMembers.includes(location.origin);
+
+  let poolRefreshed = false;
+  async function poolRefresh() {
+    if (poolRefreshed) return;
+    poolRefreshed = true;
+    try {
+      const r = await fetchT('/net/pool', {}, 5000);
+      if (!r.ok) return; // 老服务端没有该端点:保持缓存,静默
+      const d = await r.json();
+      if (Array.isArray(d.pool)) {
+        poolMembers = d.pool;
+        localStorage.setItem(POOL_CACHE_KEY, JSON.stringify({ pool: d.pool, ts: Date.now() }));
+      }
+    } catch { /* 静默:池只是优化,拿不到不影响使用 */ }
+  }
+
+  // no-cors 探测:任何应答都证明"跳板机+隧道+源站"整条链存活,只取耗时。
+  function poolProbeOnce(origin, ms) {
+    return new Promise((resolve) => {
+      const c = new AbortController();
+      const t0 = performance.now();
+      const timer = setTimeout(() => { c.abort(); resolve(null); }, ms);
+      fetch(origin + '/net/probe', { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal: c.signal })
+        .then(() => resolve(performance.now() - t0))
+        .catch(() => resolve(null))
+        .finally(() => clearTimeout(timer));
+    });
+  }
+  async function poolProbe(origin) { // 两轮取最小:首轮含 TLS 建连,次轮是稳态
+    const a = await poolProbeOnce(origin, 2500);
+    const b = await poolProbeOnce(origin, 2500);
+    const ok = [a, b].filter((v) => v != null);
+    return ok.length ? Math.min(...ok) : null;
+  }
+
+  function poolGoto(origin) {
+    location.replace(origin + location.pathname + location.search + location.hash);
+  }
+
+  // 加载时选路:只在"当前通道探测不通"或"明显更快(快一半以上且差 >150ms)
+  // 且终端尚未连上"时改道——连通后为几十毫秒重载页面得不偿失。
+  async function poolBootPick() {
+    if (!inPool() || poolMembers.length < 2) return;
+    if (sessionStorage.getItem(POOL_SWITCHED_KEY)) return;
+    const results = await Promise.all(poolMembers.map(async (o) => ({ o, ms: await poolProbe(o) })));
+    const cur = results.find((r) => r.o === location.origin);
+    const alive = results.filter((r) => r.ms != null).sort((x, y) => x.ms - y.ms);
+    if (!alive.length || alive[0].o === location.origin) return;
+    const curDead = !cur || cur.ms == null;
+    if (transport && !curDead) return;
+    const muchFaster = !curDead && alive[0].ms < cur.ms * 0.5 && cur.ms - alive[0].ms > 150;
+    if (curDead || muchFaster) {
+      sessionStorage.setItem(POOL_SWITCHED_KEY, '1');
+      poolGoto(alive[0].o);
+    }
+  }
+
+  // 劣化切换:连续 2 轮"WS/HTTP 都试不通"视为本通道劣化,探测其余成员,有活的
+  // 就整页切过去。5 分钟内最多切 2 次,全池皆死(如本机断网)则原地退避重试。
+  let poolConsecFails = 0;
+  let poolFailoverBusy = false;
+  function poolNoteConnected() { poolConsecFails = 0; }
+  async function poolNoteConnectFailure() {
+    poolConsecFails++;
+    if (!inPool() || poolMembers.length < 2) return;
+    if (poolConsecFails < 2 || poolFailoverBusy) return;
+    poolFailoverBusy = true;
+    try {
+      let ts = [];
+      try { ts = JSON.parse(sessionStorage.getItem(POOL_FAILOVER_TS_KEY) || '[]'); } catch { /* 当空表 */ }
+      ts = ts.filter((t) => Date.now() - t < 300000);
+      if (ts.length >= 2) return;
+      const others = poolMembers.filter((o) => o !== location.origin);
+      const results = await Promise.all(others.map(async (o) => ({ o, ms: await poolProbe(o) })));
+      const alive = results.filter((r) => r.ms != null).sort((x, y) => x.ms - y.ms);
+      if (!alive.length) { poolConsecFails = 0; return; }
+      ts.push(Date.now());
+      sessionStorage.setItem(POOL_FAILOVER_TS_KEY, JSON.stringify(ts));
+      setStatus(false, `切换通道 → ${new URL(alive[0].o).host} …`);
+      poolGoto(alive[0].o);
+    } finally { poolFailoverBusy = false; }
+  }
+
+  // ------------------------------------------------------------------
   // connection manager
   // ------------------------------------------------------------------
   let transport = null;
@@ -318,7 +418,7 @@
     fit.fit();
 
     const hooks = {
-      onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); focusTerm(); },
+      onUp: (label) => { transportLabel = label; retryMs = 500; setStatus(true, `已连接 (${label})`); focusTerm(); poolNoteConnected(); poolRefresh(); },
       onData: (d) => {
         if (blockCap) { try { blockCap.feed(d); } catch { /* 解析器异常绝不拖累终端 */ } }
         term.write(d);
@@ -344,6 +444,7 @@
     if (!transport) {
       if (boxFatal) return; // onFatal already set status; do not enter the retry loop
       setStatus(false, '连接失败，重试中…');
+      poolNoteConnectFailure(); // 池成员上连续全链失败会触发向存活成员的切换
       setTimeout(connect, retryMs);
       retryMs = Math.min(retryMs * 2, 8000);
     } else {
@@ -1199,6 +1300,7 @@
   rememberSession(sessionName); // persist the resolved session for this tab
   applyViewport();
   connect();
+  poolBootPick(); // 与首连并行测速;是否改道见函数内的克制条件
 
   // --- 文件浏览器面板 ---
   const filePanel = document.getElementById('file-panel');

@@ -11,6 +11,7 @@ const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
 const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
 const { isValidBoxName, parseBoxNode, serviceAuthAllowed, boxSockPath, nixShellCommand, buildBoxTmuxArgv, readBoxMem } = require('./lib/box-api');
 const { resolveDeletable } = require('./lib/delete-guard');
+const { parseFastHosts, parseFastPool, poolHosts, pickPairHost, cookieDomainFor, connectSrcDirective, attrEscape } = require('./lib/fast-pool');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -56,7 +57,13 @@ async function verifyAccessJwt(req) {
 // itself requires a valid Access JWT — the email whitelist in Cloudflare Access
 // therefore remains the single gate for both domains.
 // ---------------------------------------------------------------------------
-const FAST_HOST = process.env.FAST_HOST || '';                                  // e.g. term-fast.example.com
+// FAST_HOST 可为逗号分隔多值(池化):首项是 /pair 的默认签发目标。
+// FAST_POOL / FAST_COOKIE_DOMAIN 见 lib/fast-pool.js 顶部说明;三者都缺省时
+// 行为与单通道时代完全一致。
+const FAST_HOSTS = parseFastHosts(process.env.FAST_HOST);                       // e.g. a.t2.example.com:2096,b.t2.example.com:2096
+const FAST_POOL = parseFastPool(process.env.FAST_POOL);                         // e.g. https://a.t2.example.com:2096,…
+const FAST_POOL_HOSTS = poolHosts(FAST_POOL);
+const FAST_COOKIE_DOMAIN = process.env.FAST_COOKIE_DOMAIN || '';               // e.g. t2.example.com
 const MAIN_HOST = process.env.MAIN_HOST || 'term.example.com';                  // Access-protected domain (set via env)
 const COOKIE_NAME = 'mtw_auth';
 const COOKIE_TTL_S = 30 * 24 * 3600;
@@ -385,14 +392,15 @@ const MIME = {
 };
 // 内容安全策略:脚本仅同源(挡内联注入,前端无内联 script/on* 处理器);
 // 样式放开内联——KaTeX 往元素写内联 style、xterm 注入 <style>,故 style-src 需 'unsafe-inline'。
-// 所有第三方资源已全部同源 vendored,故 default/script/img/font/connect 皆 'self'。
+// 所有第三方资源已全部同源 vendored,故 default/script/img/font 皆 'self';
+// connect-src 额外放行池成员 origin——测速探测是跨源 fetch,不列入会被 CSP 挡掉。
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self'",
+  connectSrcDirective(FAST_POOL),
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
@@ -439,9 +447,12 @@ const requestHandler = async (req, res) => {
     const auth = await verifyAccessJwt(req);
     if (!auth.ok) return json(res, 403, { error: 'open /pair via the Access-protected domain' });
     if (auth.cn) return json(res, 403, { error: 'service token cannot pair' });
-    if (!FAST_HOST) return json(res, 400, { error: 'FAST_HOST not configured' });
+    // ?host= 允许选路页指定签发目标;仅白名单(FAST_HOST 列表 ∪ 池成员)命中才生效,
+    // 否则回落默认首项——请求值绝不原样进入跳转 URL/HTML。
+    const pairHost = pickPairHost(url.searchParams.get('host'), FAST_HOSTS, FAST_POOL_HOSTS);
+    if (!pairHost) return json(res, 400, { error: 'FAST_HOST not configured' });
     const tk = sign({ typ: 'pair', email: auth.email, jti: crypto.randomUUID(), exp: Math.floor(Date.now() / 1000) + PAIR_TTL_S });
-    const dest = `https://${FAST_HOST}/pair/claim?tk=${encodeURIComponent(tk)}`;
+    const dest = `https://${pairHost}/pair/claim?tk=${encodeURIComponent(tk)}`;
     console.log(`[${new Date().toISOString()}] ${auth.email} minted a fast-path pairing link`);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end(`<!DOCTYPE html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${dest}"><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em"><p>正在跳转到快速通道…</p><p><a style="color:#58a6ff" href="${dest}">没有自动跳转请点这里</a>（链接 60 秒内有效）</p>`);
@@ -455,12 +466,52 @@ const requestHandler = async (req, res) => {
     }
     usedPairIds.set(p.jti, p.exp);
     const cookie = sign({ typ: 'cookie', email: p.email, exp: Math.floor(Date.now() / 1000) + COOKIE_TTL_S });
-    console.log(`[${new Date().toISOString()}] ${p.email} claimed fast-path cookie`);
+    // 池化:配置了共享 Cookie 域且与本次请求 Host 后缀匹配时带 Domain=,
+    // 一次配对全池通用;不匹配(遗留单通道域名)保持 host-only,行为不变。
+    const ckDomain = cookieDomainFor(req.headers.host, FAST_COOKIE_DOMAIN);
+    console.log(`[${new Date().toISOString()}] ${p.email} claimed fast-path cookie${ckDomain ? ` (domain=${ckDomain})` : ''}`);
     res.writeHead(302, {
-      'Set-Cookie': `${COOKIE_NAME}=${cookie}; Max-Age=${COOKIE_TTL_S}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+      'Set-Cookie': `${COOKIE_NAME}=${cookie}; Max-Age=${COOKIE_TTL_S}; Path=/;${ckDomain ? ` Domain=${ckDomain};` : ''} Secure; HttpOnly; SameSite=Lax`,
       Location: '/',
     });
     return res.end();
+  }
+
+  // ------------------------- 池化:测速探测 + 池发现 + 选路页 -------------------------
+  // 探测端点免鉴权:只回 204,不带任何数据——它是跨源测速的靶子,泄露面仅"服务存活",
+  // 而池域名本就公开于 DNS。ACAO 放开使 cors 模式也可用(no-cors 探测不依赖它)。
+  if (url.pathname === '/net/probe' && req.method === 'GET') {
+    res.writeHead(204, { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    return res.end();
+  }
+
+  // 池成员表(鉴权后可见):前端拿它做加载时选路与劣化切换。
+  if (url.pathname === '/net/pool' && req.method === 'GET') {
+    const auth = await verifyAuth(req);
+    if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
+    if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ pool: FAST_POOL }));
+  }
+
+  // 选路引导页:并发测速全部池成员,选最快跳转。由 Access 前置的主域提供(面板
+  // 「高速」按钮指到这里),不经池子自身——池内任一成员宕机不影响入口可达。
+  // 已持 Cookie 的池内访问(direct 模式)则直接跳最快 origin,无需重新配对。
+  if (url.pathname === '/fast' && req.method === 'GET') {
+    const auth = await verifyAuth(req);
+    if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
+    if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
+    const here = String(req.headers.host || '').toLowerCase();
+    const mode = FAST_POOL_HOSTS.includes(here) || FAST_HOSTS.includes(here) ? 'direct' : 'pair';
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP });
+    return res.end(`<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择最快通道</title><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em;margin:0">
+<div id="fastsel" data-pool="${attrEscape(JSON.stringify(FAST_POOL))}" data-mode="${mode}">
+<h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>正在测速选择最快通道…</h3>
+<ul id="list" style="list-style:none;padding:0;line-height:2"></ul>
+<p id="msg" style="color:#8b949e"></p>
+<noscript><p>需要 JavaScript 完成测速;或直接<a style="color:#58a6ff" href="${mode === 'direct' ? '/' : '/pair'}">${mode === 'direct' ? '返回终端 →' : '用默认通道配对 →'}</a></p></noscript>
+</div>
+<script src="/fast-select.js"></script>`);
   }
 
   // ------------------------- terminal HTTP API -------------------------
