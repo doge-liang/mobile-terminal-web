@@ -32,6 +32,7 @@
 #   位置参数可省(用 Phase-1 默认值)，也可用同名环境变量覆盖。
 #   池化追加成员(Phase-2)：POOL_DOMAIN=t2.<zone> FAST_DOMAIN=<jump 别名>.t2.<zone> ...
 #     (先 deploy Phase-2 版 server.js 到 ORIGIN，再跑本脚本；BW-02 复活后照此一条命令追加)
+#   中转机登录用户非 root 时(须有免密 sudo)：JUMP_SUDO=1 ...(跳板侧命令一律经 sudo -n)
 #   拆除某条快速通道：DOWN=1 ...(同一组参数) —— 见文末 teardown。
 #
 # Phase-1 目标(默认值)：ORIGIN=term2(racknerd-13d12ee/192.255.136.151)，
@@ -67,6 +68,7 @@ CF_ZONE="${10:-${CF_ZONE:-doge-liang-space.uk}}"
 
 # 次级参数(一般不用改)
 POOL_DOMAIN="${POOL_DOMAIN:-}"      # 池共享父域(如 t2.example.com);设了即池模式,见文件头
+JUMP_SUDO="${JUMP_SUDO:-0}"         # 1=中转机登录用户非 root(须有免密 sudo):跳板侧命令一律经 sudo -n
 WG_IF="${WG_IF:-wgfast}"            # 源站 wg 接口名，务必 != wg1(self 占用)
 WG_PORT="${WG_PORT:-51820}"         # 源站 wg 监听 UDP 端口(中转机主动发起，不监听)
 ENABLE_UFW="${ENABLE_UFW:-0}"       # 1=在源站启用 ufw(先放行 SSH)。姿态变更，须先确认主路径不是直连入站，见文末风险。
@@ -77,6 +79,11 @@ WG_MASK="${WG_SUBNET##*/}"; [ "$WG_MASK" = "$WG_SUBNET" ] && WG_MASK=24
 : "${CF_DNS_TOKEN:?need CF_DNS_TOKEN (Cloudflare 令牌，权限 Zone:Read + Zone:DNS:Edit)}"
 
 # ── 小工具 ──────────────────────────────────────────────────────────────────
+# 跳板侧 sudo 前缀:JUMP_SUDO=1 时为 "sudo -n"(免交互,无票据立刻失败而非挂住)。
+# set -e 下不用 `[ … ] && 赋值`(条件为假整条语句判 1,直接杀脚本)。
+JSUDO=""
+if [ "$JUMP_SUDO" = 1 ]; then JSUDO="sudo -n"; fi
+
 log()  { printf '\033[1;36m[fast-relay]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[fast-relay] ⚠ %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fast-relay] ✗ %s\033[0m\n' "$*" >&2; exit 1; }
@@ -111,7 +118,7 @@ cf_zone_id() { cf_api "https://api.cloudflare.com/client/v4/zones?name=$CF_ZONE"
 if [ "$DOWN" = 1 ]; then
   log "DOWN：拆除快速通道 $FAST_DOMAIN:$FAST_PORT  (ORIGIN=$ORIGIN_SSH JUMP=$JUMP_SSH)"
   # 取中转机公钥用于在源站按公钥精确删除该对端(删错对端会误伤其它中转机)。
-  JPUB=$(SSH "$JUMP_SSH" "cat /etc/wireguard/$WG_IF.pub 2>/dev/null" | tr -d '\r\n' || true)
+  JPUB=$(SSH "$JUMP_SSH" "$JSUDO cat /etc/wireguard/$WG_IF.pub 2>/dev/null" | tr -d '\r\n' || true)
   [ -n "$JPUB" ] || warn "未取到 JUMP 侧公钥(不可达或从未建立)：源站上对应 [Peer] 将保留，如有请手工核对。"
 
   log "  ORIGIN：删对端 + 回收 ufw 规则 + 删站点块(末通道才停服务/删令牌) + 还原 env"
@@ -177,7 +184,7 @@ echo OK
 REMOTE
 
   log "  JUMP：删 nginx stream drop-in + 拆 wg 接口(仍被其它域名共用则保留)"
-  SSH "$JUMP_SSH" bash -s -- "$WG_IF" "$FAST_DOMAIN" "$ORIGIN_WG_IP" <<'REMOTE'
+  SSH "$JUMP_SSH" $JSUDO bash -s -- "$WG_IF" "$FAST_DOMAIN" "$ORIGIN_WG_IP" <<'REMOTE'
 set -euo pipefail
 IF="$1"; FDOM="$2"; OWGIP="$3"
 DROPIN="/etc/nginx/stream.d/term-fast-$FDOM.conf"
@@ -266,7 +273,7 @@ ORIGIN_PUB="${ORIGIN_PUB//[$'\r\n']/}"
 # ── 3) JUMP：装 wireguard + 幂等生成密钥，取回公钥 ──────────────────────────
 # stream 模块不在这装：任务保证 BW-02 已自带 stream；能力检测放到第 8 步(见 has_stream)。
 log "[3/9] JUMP 装 wireguard + 生成 wg 密钥(幂等)"
-JUMP_PUB=$(SSH "$JUMP_SSH" bash -s -- "$WG_IF" <<'REMOTE'
+JUMP_PUB=$(SSH "$JUMP_SSH" $JSUDO bash -s -- "$WG_IF" <<'REMOTE'
 set -euo pipefail
 IF="$1"
 export DEBIAN_FRONTEND=noninteractive
@@ -343,7 +350,7 @@ REMOTE
 
 # ── 5) JUMP：wg 接口(幂等) + 对端 ORIGIN(带 Endpoint，主动发起) ─────────────
 log "[5/9] JUMP 配 $WG_IF + 对端源站 $ORIGIN_PUBIP:$WG_PORT (发起方，keepalive 25)"
-SSH "$JUMP_SSH" bash -s -- \
+SSH "$JUMP_SSH" $JSUDO bash -s -- \
   "$WG_IF" "$JUMP_WG_IP" "$WG_MASK" "$ORIGIN_PUB" "$ORIGIN_PUBIP" "$WG_PORT" "$ORIGIN_WG_IP" <<'REMOTE'
 set -euo pipefail
 IF="$1"; JWGIP="$2"; MASK="$3"; OPUB="$4"; OPUBIP="$5"; WGPORT="$6"; OWGIP="$7"
@@ -531,7 +538,7 @@ REMOTE
 
 # ── 8) JUMP：nginx stream drop-in(追加式，能力门控 + nginx -t 门控，失败即回滚) ─
 log "[8/9] JUMP 加 nginx stream 转发 :$FAST_PORT -> $ORIGIN_WG_IP:$FAST_PORT (能力+语法门控)"
-SSH "$JUMP_SSH" bash -s -- "$FAST_PORT" "$ORIGIN_WG_IP" "$ALLOW_MOD_INSTALL" "$FAST_DOMAIN" <<'REMOTE'
+SSH "$JUMP_SSH" $JSUDO bash -s -- "$FAST_PORT" "$ORIGIN_WG_IP" "$ALLOW_MOD_INSTALL" "$FAST_DOMAIN" <<'REMOTE'
 set -euo pipefail
 FPORT="$1"; OWGIP="$2"; ALLOW_MOD="$3"; FDOM="$4"
 export DEBIAN_FRONTEND=noninteractive
@@ -682,7 +689,7 @@ PASS=1
 # wg 握手：源站上看到 JUMP 对端握手时间 >0；中转机上看到 ORIGIN 对端握手 >0。
 hs_origin() { SSH "$ORIGIN_SSH" "wg show '$WG_IF' latest-handshakes" 2>/dev/null \
   | awk -v k="$JUMP_PUB"   '$1==k && $2>0{ok=1} END{exit ok?0:1}'; }
-hs_jump()   { SSH "$JUMP_SSH"   "wg show '$WG_IF' latest-handshakes" 2>/dev/null \
+hs_jump()   { SSH "$JUMP_SSH"   "$JSUDO wg show '$WG_IF' latest-handshakes" 2>/dev/null \
   | awk -v k="$ORIGIN_PUB" '$1==k && $2>0{ok=1} END{exit ok?0:1}'; }
 
 # 端到端 curl：--resolve 钉到中转机 IP，绕开 DNS 传播延迟，只测数据面。
@@ -715,7 +722,7 @@ while :; do hs_jump   && { hj=1; break; }; [ "$SECONDS" -ge "$hd" ] && break; sl
 
 # nginx：既验 -t 又验 :FAST_PORT 真在 listen(仅 -t 会给假信心) / caddy validate
 ngx_ok=0
-if SSH "$JUMP_SSH" "nginx -t" >/dev/null 2>&1 \
+if SSH "$JUMP_SSH" "$JSUDO nginx -t" >/dev/null 2>&1 \
    && SSH "$JUMP_SSH" "ss -ltnH 'sport = :$FAST_PORT' | grep -q ." >/dev/null 2>&1; then ngx_ok=1; fi
 cad_ok=0; SSH "$ORIGIN_SSH" 'set -a; [ -f /etc/caddy-fast/caddy.env ] && . /etc/caddy-fast/caddy.env; set +a; /usr/local/bin/caddy-fast validate --config /etc/caddy-fast/Caddyfile' >/dev/null 2>&1 && cad_ok=1
 
