@@ -40,7 +40,7 @@ git/gh 在本环境须先 `export HOME=/root`,否则读不到凭证。`main` 受
 
 - **两份 wrangler 配置**。仓库里的 `wrangler.toml` 是给开源使用者的占位符模板,照它部署会把 KV id、自定义域、Access 团队域全写错。真实配置在 `panel/wrangler.prod.toml`(已 gitignore),部署须 `--config` 指定。
 - **`PANEL_AUD` 是 secret,且顺序要紧**。它为空时 `verifyAccess` 无条件返回 `true`,`/api/*` 停止校验 Access JWT。新环境要先 `wrangler secret put PANEL_AUD` 再 deploy。`SVC_TOKEN_ID`/`SVC_TOKEN_SECRET` 同为 secret,`wrangler deploy` 不会动它们。
-- **`FAST_SELF_URL` 留空则「高速」按钮消失**。KV 里并没有持久化 `fastUrl`(已核实),按钮全靠这个 env 值在内存回填。
+- **`FAST_SELF_URL` 留空则 self 卡片的「高速」按钮消失**——self 的 `fastUrl` 不落 KV,全靠这个 env 值在内存回填。term2 则相反:其 `fastUrl` 自 2026-08-04 起持久化在 KV,指向选路页 `https://term2.doge-liang-space.uk/fast`(池化,见「双通道」节),与 env 无关。
 
 生产仍可能被旁路修改(历史上就是经 Cloudflare API 直传的),部署前把线上版本拉下来与仓库版对比仍是稳妥做法。回滚可用 Cloudflare 保留的版本历史。
 
