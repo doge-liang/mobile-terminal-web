@@ -536,28 +536,6 @@ set -euo pipefail
 FPORT="$1"; OWGIP="$2"; ALLOW_MOD="$3"; FDOM="$4"
 export DEBIAN_FRONTEND=noninteractive
 
-# 能力检测：nginx 是否真能吃 stream{}。不用 dpkg -s(非 stock 构建会误判)。
-#   - 静态内建(--with-stream 后须紧跟空白/行尾：--with-stream=dynamic 不算，
-#     --with-stream_ssl_module 等子模块参数更不能算——Debian 构建里它们与 =dynamic 并存) → 有
-#   - 动态模块已 load(生效配置里有未注释的 load_module ngx_stream_module.so) → 有
-has_stream() {
-  nginx -V 2>&1 | grep -qE -- '--with-stream([[:space:]]|$)' && return 0
-  nginx -T 2>/dev/null | grep -qE '^[[:space:]]*load_module[[:space:]]+\S*ngx_stream_module\.so' && return 0
-  return 1
-}
-MODFILE=""     # 若本次由我们 apt 装了动态模块，记下 modules-enabled 条目，供 nginx -t 失败时回滚
-if ! has_stream; then
-  if [ "$ALLOW_MOD" = 1 ]; then
-    echo "WARN: 未检测到 nginx stream 能力，按 ALLOW_MOD_INSTALL=1 安装 libnginx-mod-stream。" >&2
-    apt-get update -qq >&2; apt-get install -y -qq libnginx-mod-stream >&2
-    MODFILE=/etc/nginx/modules-enabled/50-mod-stream.conf
-  else
-    echo "NGINX_STREAM_MODULE_MISSING: 该 nginx 不支持 stream。请手动确认/安装 libnginx-mod-stream" >&2
-    echo "  (或 ALLOW_MOD_INSTALL=1 重跑；非 stock nginx 请自行处理 ABI，勿盲装)。" >&2
-    exit 1
-  fi
-fi
-
 mkdir -p /etc/nginx/stream.d
 # drop-in 按域名落盘：同一中转机服务多个 origin 时互不覆盖。
 DROPIN="/etc/nginx/stream.d/term-fast-$FDOM.conf"
@@ -566,7 +544,8 @@ TS=$(date +%Y%m%d%H%M%S)
 # 端口冲突预检：FAST_PORT 已被其它通道的 drop-in 占用时给出可操作报错
 # (否则要到 nginx -t 才炸出 duplicate listen，信息晦涩且已写了半截)。
 # 例外(池化)：L4 透传 SNI 无关——既有 drop-in 若指向同一目标,新域名天然被它服务,
-# 直接复用,绝不能再建重复 listener。
+# 直接复用,绝不能再建重复 listener。复用场景先于模块探测:什么都不建就无须探测,
+# 且「:FPORT 正被监听」本身就是 stream 能力最硬的证明。
 for f in /etc/nginx/stream.d/*.conf; do
   [ -e "$f" ] || continue
   [ "$f" = "$DROPIN" ] && continue
@@ -582,6 +561,33 @@ for f in /etc/nginx/stream.d/*.conf; do
     exit 1
   fi
 done
+
+# 能力检测：nginx 是否真能吃 stream{}。不用 dpkg -s(非 stock 构建会误判)。
+#   - 静态内建(--with-stream 后须紧跟空白/行尾：--with-stream=dynamic 不算，
+#     --with-stream_ssl_module 等子模块参数更不能算——Debian 构建里它们与 =dynamic 并存) → 有
+#   - 动态模块已 load(生效配置里有未注释的 load_module ngx_stream_module.so) → 有
+# pipefail 陷阱：`nginx -T | grep -q` 里 grep 命中即退,nginx 未写完转储就收 SIGPIPE,
+# 管道整体判 141——先捕获输出再匹配,grep 不用 -q(读完输入),两端都不触发 SIGPIPE。
+has_stream() {
+  local dump
+  dump=$(nginx -V 2>&1) || true
+  printf '%s\n' "$dump" | grep -E -- '--with-stream([[:space:]]|$)' >/dev/null && return 0
+  dump=$(nginx -T 2>/dev/null) || true
+  printf '%s\n' "$dump" | grep -E '^[[:space:]]*load_module[[:space:]]+\S*ngx_stream_module\.so' >/dev/null && return 0
+  return 1
+}
+MODFILE=""     # 若本次由我们 apt 装了动态模块，记下 modules-enabled 条目，供 nginx -t 失败时回滚
+if ! has_stream; then
+  if [ "$ALLOW_MOD" = 1 ]; then
+    echo "WARN: 未检测到 nginx stream 能力，按 ALLOW_MOD_INSTALL=1 安装 libnginx-mod-stream。" >&2
+    apt-get update -qq >&2; apt-get install -y -qq libnginx-mod-stream >&2
+    MODFILE=/etc/nginx/modules-enabled/50-mod-stream.conf
+  else
+    echo "NGINX_STREAM_MODULE_MISSING: 该 nginx 不支持 stream。请手动确认/安装 libnginx-mod-stream" >&2
+    echo "  (或 ALLOW_MOD_INSTALL=1 重跑；非 stock nginx 请自行处理 ABI，勿盲装)。" >&2
+    exit 1
+  fi
+fi
 
 # 目标 drop-in 内容；仅在与现状不同才写(避免无谓改动/备份堆积)。改既有 drop-in 前留一次快照供回滚。
 read -r -d '' DESIRED_DROPIN <<CONF || true
