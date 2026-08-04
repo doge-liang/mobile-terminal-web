@@ -611,13 +611,19 @@ fi
 restore_dropin() {
   if [ "$DROPIN_PREEXISTED" = 1 ]; then cp -a "$DROPIN.prev" "$DROPIN"; else rm -f "$DROPIN"; fi
 }
-abort_mod() { [ -n "$MODFILE" ] && rm -f "$MODFILE"; }   # 回滚我们刚装的 load_module(避免下次启动失败)
+# set -e 陷阱:函数最后一条若是 `[ … ] && cmd`,条件为假时函数返回 1,调用点作为
+# 普通语句会被 set -e 直接杀死(错误信息都没机会打)——必须用 if 形式。
+abort_mod() { if [ -n "$MODFILE" ]; then rm -f "$MODFILE"; fi; }   # 回滚我们刚装的 load_module(避免下次启动失败)
 
 # 确认「生效配置」真的包含 stream.d/*.conf；否则本 drop-in 是孤儿(2096 不会 listen)。
+# nginx -T 先一次性捕获再匹配:直接 `| grep -q` 在 pipefail 下有 SIGPIPE 竞态
+# (grep 命中即退,nginx 没写完就吃 SIGPIPE,管道整体判 141,include 明明在却判无,
+# 错误落入下方 FOREIGN 分支)。与 has_stream 同类,已在真机(dmit-01)踩实。
+NGXDUMP=$(nginx -T 2>/dev/null) || true
 NBAK=""
-if nginx -T 2>/dev/null | grep -qE 'include[[:space:]]+\S*stream\.d'; then
+if printf '%s\n' "$NGXDUMP" | grep -E 'include[[:space:]]+\S*stream\.d' >/dev/null; then
   : # 已 include 我们的 drop-in 目录，无需动 nginx.conf
-elif nginx -T 2>/dev/null | grep -qE '^[[:space:]]*stream[[:space:]]*\{' \
+elif printf '%s\n' "$NGXDUMP" | grep -E '^[[:space:]]*stream[[:space:]]*\{' >/dev/null \
   || grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
   # 已存在 stream{} 但没 include 我们的目录：这可能是 xray/别人的块，不擅自改写，中止让人工处理。
   restore_dropin; rm -f "$DROPIN.prev"; abort_mod
