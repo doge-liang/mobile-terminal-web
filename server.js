@@ -9,6 +9,7 @@ const { safeBasename, uniqueName } = require('./lib/upload-paths');
 const { isValidUploadId, finalName, planChunk } = require('./lib/chunk-upload');
 const { classifyPreview, looksBinary, PREVIEW_MAX_BYTES, PREVIEW_IMG_MAX } = require('./lib/preview');
 const { isValidBoxName, parseBoxNode, serviceAuthAllowed, boxSockPath, nixShellCommand, buildBoxTmuxArgv, readBoxMem } = require('./lib/box-api');
+const { resolveDeletable } = require('./lib/delete-guard');
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 // comma-separated list; e.g. "127.0.0.1,10.77.0.1" to also serve the WireGuard link
@@ -789,6 +790,43 @@ const requestHandler = async (req, res) => {
         : (a.type === 'dir' ? -1 : 1));
       const parent = path.dirname(p) === p ? p : path.dirname(p); // 根 / 的 parent 为自身
       return json(res, 200, { path: p, parent, entries });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/t/rm') {
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+      const guard = resolveDeletable(body.path, { home: process.env.HOME || '/root', cwd: __dirname, protect: [SECRET_FILE] });
+      if (guard.error) return json(res, 400, { error: guard.error });
+      const p = guard.path;
+      // lstat:符号链接删链接本身,不跟随到目标
+      let st;
+      try { st = await fs.promises.lstat(p); }
+      catch (e) { return json(res, e.code === 'EACCES' ? 403 : 404, { error: e.code === 'EACCES' ? '无权限' : '文件不存在' }); }
+
+      try {
+        if (st.isDirectory()) {
+          if (body.recursive === true) {
+            await fs.promises.rm(p, { recursive: true, force: false });
+          } else {
+            // 先试非递归:空目录一次过;非空回 409 带条目数,由前端二次确认后带 recursive 重试
+            try {
+              await fs.promises.rmdir(p);
+            } catch (e) {
+              if (e.code !== 'ENOTEMPTY') throw e;
+              let count = 0;
+              try { count = (await fs.promises.readdir(p)).length; } catch { /* 数不出来就报 0 */ }
+              return json(res, 409, { error: 'not empty', count });
+            }
+          }
+        } else {
+          await fs.promises.unlink(p);
+        }
+      } catch (e) {
+        console.log(`[rm] failed ${p}: ${e.message}`);
+        return json(res, e.code === 'EACCES' || e.code === 'EPERM' ? 403 : 500, { error: e.code === 'EACCES' || e.code === 'EPERM' ? '无权限删除' : `删除失败: ${e.code || e.message}` });
+      }
+      console.log(`[${new Date().toISOString()}] ${auth.email} deleted ${p} (${st.isDirectory() ? 'dir' : 'file'}${body.recursive === true ? ', recursive' : ''})`);
+      return json(res, 200, { ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/t/open') {

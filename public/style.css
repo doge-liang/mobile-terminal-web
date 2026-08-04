@@ -323,19 +323,22 @@ html, body {
 .fp-name { display: flex; flex: 1; min-width: 0; overflow: hidden; }
 .fp-name .fn-stem { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-name .fn-ext { flex: none; white-space: nowrap; }
-/* 行尾下载图标:点文件名=预览,点它=直接下载 */
-.fp-dl {
+/* 行尾操作图标:点文件名=预览,点下载=直接下载,点垃圾桶=删除(需二次确认) */
+.fp-act {
   flex: none;
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  align-self: stretch;   /* 行是 align-items:center,不撑高的话按钮只有图标那 16px 可点 */
+  padding: 0 10px;   /* 一行最多两个图标 + 大小标签,窄屏留白只能到这 */
   background: transparent;
   border: none;
   border-left: 1px solid var(--border);
   color: #8b949e;
   cursor: pointer;
 }
-.fp-dl:active { background: var(--border); color: var(--fg); }
+.fp-act:active { background: var(--border); color: var(--fg); }
+/* 删除待确认:变红并换成对勾,再点一次才真删 */
+.fp-rm.armed { background: rgba(248, 81, 73, 0.15); color: #f85149; }
 /* file-panel text buttons: leading icon + boxed like the panel's other controls */
 #fp-up, #fp-upload, #fp-hidden {
   display: inline-flex;
