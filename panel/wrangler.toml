@@ -21,7 +21,7 @@ custom_domain = true
 [vars]
 TEAM_DOMAIN = "your-team.cloudflareaccess.com"   # Access 团队域
 ZONE_SUFFIX = ".example.com"                     # 允许的节点域名后缀（留空=只校验 https）
-# 本机的快速通道地址；设了才在本机卡片上渲染绿色「高速」按钮。留空=只显示「打开」。
+# self 节点的快速通道地址；设了才在该卡片上渲染绿色「高速」按钮。留空=只显示「打开」。
 # 须是 https 且落在 ZONE_SUFFIX 之内，否则按配错处理（不渲染按钮）。
 # FAST_SELF_URL = "https://term-fast.example.com:2096"
 # PANEL_AUD 用 secret 注入，不写这里
