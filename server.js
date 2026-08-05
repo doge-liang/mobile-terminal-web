@@ -485,11 +485,12 @@ const requestHandler = async (req, res) => {
     return res.end();
   }
 
-  // 池成员表(鉴权后可见):前端拿它做加载时选路与劣化切换。
+  // 池成员表(鉴权后可见):前端拿它做加载时选路与劣化切换;面板 Worker 用服务令牌
+  // 聚合池状态——仅放行 BOX_CTRL_CN 白名单身份(与 /t/box/* 同一面板令牌),其余服务令牌仍拒。
   if (url.pathname === '/net/pool' && req.method === 'GET') {
     const auth = await verifyAuth(req);
     if (!auth.ok) return json(res, 403, { error: 'unauthorized' });
-    if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
+    if (auth.cn && (!BOX_CTRL_CN || auth.cn !== BOX_CTRL_CN)) return json(res, 403, { error: 'service token not allowed' });
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ pool: FAST_POOL }));
   }
@@ -503,10 +504,11 @@ const requestHandler = async (req, res) => {
     if (auth.cn) return json(res, 403, { error: 'service token restricted to /t/box/*' });
     const here = String(req.headers.host || '').toLowerCase();
     const mode = FAST_POOL_HOSTS.includes(here) || FAST_HOSTS.includes(here) ? 'direct' : 'pair';
+    const stay = url.searchParams.get('stay') === '1'; // 只测速不跳转:把选路页当池状态页用
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': CSP });
-    return res.end(`<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择最快通道</title><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em;margin:0">
-<div id="fastsel" data-pool="${attrEscape(JSON.stringify(FAST_POOL))}" data-mode="${mode}">
-<h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>正在测速选择最快通道…</h3>
+    return res.end(`<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${stay ? '通道测速' : '选择最快通道'}</title><body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:2em;margin:0">
+<div id="fastsel" data-pool="${attrEscape(JSON.stringify(FAST_POOL))}" data-mode="${mode}" data-stay="${stay ? '1' : ''}">
+<h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>${stay ? '通道测速' : '正在测速选择最快通道…'}</h3>
 <ul id="list" style="list-style:none;padding:0;line-height:2"></ul>
 <p id="msg" style="color:#8b949e"></p>
 <noscript><p>需要 JavaScript 完成测速;或直接<a style="color:#58a6ff" href="${mode === 'direct' ? '/' : '/pair'}">${mode === 'direct' ? '返回终端 →' : '用默认通道配对 →'}</a></p></noscript>

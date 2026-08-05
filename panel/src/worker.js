@@ -140,6 +140,45 @@ async function aggregateBoxLs(env, cfg) {
   return mergeBoxLs(await Promise.all(nodes.map((n) => nodeBoxLs(n, cfg))));
 }
 
+// --- 加速池状态:池成员表取自各节点 /net/pool(同一服务令牌),测速在浏览器端做 ---
+// (Worker 从 CF 边缘测时延没有意义;用户浏览器的路径才是选路时真实用的路径。)
+async function nodePool(node, cfg) {
+  try {
+    const r = await fetch(node.url + "/net/pool", { headers: svcHeaders(cfg), signal: AbortSignal.timeout(10000) });
+    if (r.status === 403) return { node, ok: false, reason: "节点拒绝(需 Phase2 版本 + 服务令牌放行)" };
+    if (!r.ok) return { node, ok: false, reason: "HTTP " + r.status };
+    const d = await r.json();
+    return { node, ok: true, pool: Array.isArray(d.pool) ? d.pool : [] };
+  } catch (e) {
+    return { node, ok: false, reason: (e && e.message) || "unreachable" };
+  }
+}
+
+// 按跳板机聚合两池:同一台跳板机在各节点池里的成员名首段相同(dmit-01.t1.… / dmit-01.t2.…),
+// 以首段为行、节点为列。行序=首见序(即入池序),不可达节点只进 nodes 不出行。
+export function groupPoolByJump(results) {
+  const nodes = results.map((r) => ({
+    id: r.node.id, name: r.node.name,
+    ok: !!r.ok, reason: r.ok ? undefined : r.reason, count: r.ok ? r.pool.length : 0,
+  }));
+  const rowByJump = new Map();
+  for (const r of results) {
+    if (!r.ok) continue;
+    for (const origin of r.pool) {
+      // origin 最终进 <a href>:与 fastUrl 的 validUrl 同理,面板侧强制 https,
+      // 节点侧数据异常(或被改)时最多少一行,不会变成注入面。
+      let u;
+      try { u = new URL(origin); } catch { continue; }
+      if (u.protocol !== "https:") continue;
+      const label = u.hostname.split(".")[0];
+      if (!label) continue;
+      if (!rowByJump.has(label)) rowByJump.set(label, { jump: label, cells: {} });
+      rowByJump.get(label).cells[r.node.id] = u.origin;
+    }
+  }
+  return { nodes, rows: [...rowByJump.values()] };
+}
+
 async function postNodeBox(node, op, name, cfg) {
   try {
     const r = await fetch(node.url + "/t/box/" + op, {
@@ -243,6 +282,10 @@ export default {
     if (url.pathname === "/api/nodes" && request.method === "GET") {
       return json({ nodes: await loadNodes(env, cfg) });
     }
+    if (url.pathname === "/api/pool" && request.method === "GET") {
+      const nodes = await loadNodes(env, cfg);
+      return json(groupPoolByJump(await Promise.all(nodes.map((n) => nodePool(n, cfg)))));
+    }
     if (url.pathname === "/api/nodes" && request.method === "POST") {
       let body; try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
       const name = String(body.name || "").trim().slice(0, 40);
@@ -325,6 +368,16 @@ const HTML = `<!DOCTYPE html>
   .bdrop{background:transparent;border:1px solid var(--border);color:#f85149}
   button[disabled]{opacity:.5}
   .offline{color:#f85149;font-size:12px;margin-bottom:8px}
+  .prow{display:flex;align-items:center;gap:8px;background:var(--bar);border:1px solid var(--border);
+    border-radius:10px;padding:8px 12px;margin-bottom:6px}
+  .pjump{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  a.plat{font-size:12px;border-radius:6px;padding:3px 0;text-decoration:none;white-space:nowrap;
+    border:1px solid var(--border);color:#8b949e;width:96px;text-align:center}
+  a.plat.ok{background:#1a7f37;border-color:#1a7f37;color:#fff}
+  a.plat.slow{background:#9e6a03;border-color:#9e6a03;color:#fff}
+  a.plat.bad{background:transparent;border-color:#f85149;color:#f85149}
+  button.rerun{background:transparent;border:1px solid var(--border);color:var(--fg);
+    border-radius:8px;padding:8px;font:inherit;width:100%;margin-top:4px}
 </style></head>
 <body>
 <h1>节点面板</h1>
@@ -339,6 +392,9 @@ const HTML = `<!DOCTYPE html>
   <input id="f-note" placeholder="备注（可选）" maxlength="60" autocomplete="off">
   <button class="add" type="submit">添加节点</button>
 </form>
+<h2>加速池</h2>
+<div id="pool-off"></div>
+<div id="pool">加载中…</div>
 <div class="toast" id="toast"></div>
 <script>
 var listEl = document.getElementById("list");
@@ -493,7 +549,78 @@ function loadBoxes(){
   fetch("/api/box/ls").then(function(r){ return r.json(); }).then(renderBoxes)
     .catch(function(){ boxesEl.textContent = "沙盒列表加载失败"; });
 }
+// --- 加速池:成员表来自 /api/pool(Worker 经服务令牌聚合各节点 /net/pool),
+// 时延在本浏览器实测(no-cors 打各成员 /net/probe,两轮取最小)——这才是选路真实用的路径。
+var poolEl = document.getElementById("pool");
+var poolOff = document.getElementById("pool-off");
+var poolProbing = false;
+function probeOnce(origin, ms){
+  return new Promise(function(resolve){
+    var c = new AbortController();
+    var t0 = performance.now();
+    var timer = setTimeout(function(){ c.abort(); resolve(null); }, ms);
+    fetch(origin + "/net/probe", { mode: "no-cors", cache: "no-store", credentials: "omit", signal: c.signal })
+      .then(function(){ resolve(performance.now() - t0); })
+      .catch(function(){ resolve(null); })
+      .finally(function(){ clearTimeout(timer); });
+  });
+}
+function probeMin(origin){
+  return probeOnce(origin, 2500).then(function(a){
+    return probeOnce(origin, 2500).then(function(b){
+      var ok = [a, b].filter(function(v){ return v != null; });
+      return ok.length ? Math.min.apply(null, ok) : null;
+    });
+  });
+}
+function probePool(){
+  if (poolProbing) return;
+  poolProbing = true;
+  var cells = [].slice.call(document.querySelectorAll("a.plat"));
+  Promise.all(cells.map(function(a){
+    a.className = "plat"; a.textContent = a.dataset.tag + " …";
+    return probeMin(a.dataset.origin).then(function(ms){
+      if (ms == null){ a.className = "plat bad"; a.textContent = a.dataset.tag + " 不可达"; }
+      else { a.className = ms < 120 ? "plat ok" : "plat slow"; a.textContent = a.dataset.tag + " " + Math.round(ms) + "ms"; }
+    });
+  })).then(function(){ poolProbing = false; });
+}
+function renderPool(d){
+  poolOff.innerHTML = "";
+  d.nodes.forEach(function(n){
+    if (n.ok) return;
+    var el = document.createElement("div"); el.className = "offline";
+    el.textContent = "「" + n.name + "」池表不可用:" + (n.reason || "");
+    poolOff.append(el);
+  });
+  poolEl.innerHTML = "";
+  if (!d.rows.length){ poolEl.textContent = "(无池成员)"; return; }
+  d.rows.forEach(function(row){
+    var el = document.createElement("div"); el.className = "prow";
+    var nm = document.createElement("div"); nm.className = "pjump"; nm.textContent = row.jump;
+    el.append(nm);
+    d.nodes.forEach(function(n){
+      var origin = row.cells[n.id];
+      if (!origin) return;
+      var a = document.createElement("a"); a.className = "plat";
+      a.target = "_blank"; a.rel = "noopener"; a.href = origin + "/";
+      var tag; try { tag = new URL(origin).hostname.split(".")[1]; } catch(e){ tag = n.name; }
+      a.dataset.origin = origin; a.dataset.tag = tag;
+      a.title = n.name; a.textContent = tag + " …";
+      el.append(a);
+    });
+    poolEl.append(el);
+  });
+  var btn = document.createElement("button"); btn.className = "rerun";
+  btn.textContent = "重新测速"; btn.onclick = probePool;
+  poolEl.append(btn);
+}
+function loadPool(){
+  fetch("/api/pool").then(function(r){ return r.json(); }).then(function(d){ renderPool(d); probePool(); })
+    .catch(function(){ poolEl.textContent = "池状态加载失败"; });
+}
 loadBoxes();
 setInterval(loadBoxes, 10000);
 load();
+loadPool();
 </script></body></html>`;

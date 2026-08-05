@@ -1,13 +1,15 @@
 // 选路引导页脚本(/fast):并发测速池成员,选最快跳转。
-// 页面数据经 #fastsel 的 data-pool / data-mode 传入(CSP 禁内联 script)。
+// 页面数据经 #fastsel 的 data-pool / data-mode / data-stay 传入(CSP 禁内联 script)。
 //   mode=pair   页面在 Access 主域上:跳 /pair?host=<赢家> 走签发-认领链,落地赢家 origin。
 //   mode=direct 页面在池内快速域名上(已持共享 Cookie):直接跳赢家 origin。
+//   stay=1      只测速不跳转(池状态页用法),附重新测速按钮。
 (() => {
   const root = document.getElementById('fastsel');
   if (!root) return;
   let pool = [];
   try { pool = JSON.parse(root.dataset.pool || '[]'); } catch { /* 数据坏了按空池处理 */ }
   const mode = root.dataset.mode === 'direct' ? 'direct' : 'pair';
+  const stay = root.dataset.stay === '1';
   const list = document.getElementById('list');
   const msg = document.getElementById('msg');
 
@@ -64,21 +66,41 @@
     rows.set(o, span);
   }
 
-  Promise.all(pool.map(async (o) => {
-    const ms = await probe(o);
-    const span = rows.get(o);
-    span.textContent = ms == null ? ' 不可达' : ' ' + Math.round(ms) + ' ms';
-    span.style.color = ms == null ? '#f85149' : '#3fb950';
-    return { o, ms };
-  })).then((results) => {
-    const alive = results.filter((r) => r.ms != null).sort((x, y) => x.ms - y.ms);
-    if (!alive.length) {
-      msg.textContent = '所有通道均不可达。可稍后重试,或继续用主域名(经 Cloudflare)访问。';
-      return;
-    }
-    const best = alive[0];
-    msg.textContent = '已选择 ' + hostOf(best.o) + '(' + Math.round(best.ms) + ' ms),正在跳转…';
-    // 留 600ms 让测速结果可见,也留出手动点其它通道的窗口。
-    setTimeout(() => { location.href = destFor(best.o); }, 600);
-  });
+  let running = false;
+  function runAll() {
+    if (running) return;
+    running = true;
+    for (const span of rows.values()) { span.textContent = ' 测速中…'; span.style.color = '#8b949e'; }
+    Promise.all(pool.map(async (o) => {
+      const ms = await probe(o);
+      const span = rows.get(o);
+      span.textContent = ms == null ? ' 不可达' : ' ' + Math.round(ms) + ' ms';
+      span.style.color = ms == null ? '#f85149' : '#3fb950';
+      return { o, ms };
+    })).then((results) => {
+      running = false;
+      const alive = results.filter((r) => r.ms != null).sort((x, y) => x.ms - y.ms);
+      if (!alive.length) {
+        msg.textContent = '所有通道均不可达。可稍后重试,或继续用主域名(经 Cloudflare)访问。';
+        return;
+      }
+      const best = alive[0];
+      if (stay) {
+        msg.textContent = '最快:' + hostOf(best.o) + '(' + Math.round(best.ms) + ' ms)。点击任一通道直接使用。';
+        return;
+      }
+      msg.textContent = '已选择 ' + hostOf(best.o) + '(' + Math.round(best.ms) + ' ms),正在跳转…';
+      // 留 600ms 让测速结果可见,也留出手动点其它通道的窗口。
+      setTimeout(() => { location.href = destFor(best.o); }, 600);
+    });
+  }
+
+  if (stay) {
+    const btn = document.createElement('button');
+    btn.textContent = '重新测速';
+    btn.style.cssText = 'background:#238636;color:#fff;border:none;border-radius:8px;padding:9px 16px;font:inherit;margin-top:8px';
+    btn.addEventListener('click', runAll);
+    msg.after(btn);
+  }
+  runAll();
 })();
