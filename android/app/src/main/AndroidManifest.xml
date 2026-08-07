@@ -25,6 +25,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Verified App Links：面板/终端/快速通道链接从浏览器等外部应用直接进本应用。
+                 通配符主机的验证文件在 apex：https://doge-liang-space.uk/.well-known/assetlinks.json
+                 （由 panel Worker 的 ASSETLINKS 变量提供），换签名密钥须同步更新其指纹。 -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="doge-liang-space.uk" />
+                <data android:scheme="https" android:host="*.doge-liang-space.uk" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

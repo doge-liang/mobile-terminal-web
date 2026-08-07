@@ -17,6 +17,7 @@ function cfgFrom(env) {
     svcId: env.SVC_TOKEN_ID || "",
     svcSecret: env.SVC_TOKEN_SECRET || "",
     fastSelfUrl: env.FAST_SELF_URL || "",
+    assetLinks: env.ASSETLINKS || "",
   };
 }
 
@@ -216,6 +217,15 @@ export default {
   async fetch(request, env) {
     const cfg = cfgFrom(env);
     const url = new URL(request.url);
+    // Android App Links 验证文件:经 apex 路由(doge-liang-space.uk/.well-known/*)
+    // 无 Access 公开可取——系统安装 APK 时抓取,不能有鉴权或重定向。内容整段放
+    // env ASSETLINKS(签名指纹随部署而异,不进代码)。其余 well-known 子路径一律
+    // 404,不让面板 HTML 从无 Access 的 apex 路由漏出。
+    if (url.pathname.startsWith("/.well-known/")) {
+      return url.pathname === "/.well-known/assetlinks.json" && cfg.assetLinks
+        ? new Response(cfg.assetLinks, { headers: { "content-type": "application/json" } })
+        : new Response("not found", { status: 404 });
+    }
     if (url.pathname.startsWith("/api/")) {
       if (!(await verifyAccess(request, cfg))) return json({ error: "forbidden" }, 403);
     }
