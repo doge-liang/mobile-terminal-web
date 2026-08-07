@@ -1,8 +1,12 @@
 {
   "name": "Terminal",
   "short_name": "Terminal",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "handle_links": "preferred",
   "background_color": "#0d1117",
   "theme_color": "#0d1117",
   "icons": [
