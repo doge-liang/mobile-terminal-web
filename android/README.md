@@ -11,6 +11,27 @@
 - 文件上传（`<input type=file>` → 系统文件选择器，支持多选）
 - 文件下载（DownloadManager 落到系统 Downloads 目录，自动附带 Access Cookie）
 - 软键盘 `adjustResize`、深色主题、返回键 = 页面后退
+- Verified App Links：在系统浏览器等外部应用点击 `*.doge-liang-space.uk` 链接
+  （面板「高速」按钮、加速池链接、终端地址）直接跳入本应用，而非浏览器标签页
+
+## 链接接管（App Links）
+
+`AndroidManifest.xml` 以 `android:autoVerify` 声明接管 `doge-liang-space.uk`
+及其全部子域的 https 链接。系统在安装 APK 时抓取
+`https://doge-liang-space.uk/.well-known/assetlinks.json`（通配符主机按规范
+验证 apex）核对签名指纹，验证通过后无需用户手动设置。
+
+该验证文件由 panel Worker 提供：apex 路由 `doge-liang-space.uk/.well-known/*`
+指向 panel，内容放 `wrangler.prod.toml` 的 `ASSETLINKS` 变量。指纹取自签名证书：
+
+```bash
+openssl pkcs12 -in keystore.p12 -passin pass:$PASS -nokeys -clcerts \
+  | openssl x509 -fingerprint -sha256 -noout
+```
+
+注意：**换签名密钥时除卸载重装外，还须同步更新 `ASSETLINKS` 里的指纹并重新
+部署 panel**，否则新装 APK 验证失败，链接会回落到浏览器打开。安装后可在
+系统设置 → 应用 → DogeTerm → 默认打开 中确认验证状态。
 
 ## 构建与发布
 

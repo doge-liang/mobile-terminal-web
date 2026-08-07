@@ -129,7 +129,24 @@ public class MainActivity extends Activity {
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
-            webView.loadUrl(getString(R.string.home_url));
+            webView.loadUrl(initialUrl(getIntent()));
+        }
+    }
+
+    /** App Links 冷启动：带站内链接则直达该页，否则加载面板首页。 */
+    private String initialUrl(Intent intent) {
+        Uri uri = intent != null ? intent.getData() : null;
+        return uri != null && isInternalHost(uri) ? uri.toString() : getString(R.string.home_url);
+    }
+
+    /** singleTask 下应用已在运行时，App Links 点击经此送达。 */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        Uri uri = intent.getData();
+        if (uri != null && isInternalHost(uri)) {
+            webView.loadUrl(uri.toString());
         }
     }
 
