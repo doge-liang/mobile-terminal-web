@@ -16,6 +16,13 @@ id = "<YOUR_KV_NAMESPACE_ID>"
 pattern = "panel.example.com"
 custom_domain = true
 
+# 可选：Android App Links（DogeTerm 接管站内 https 链接）需要在 zone 顶点公开
+# /.well-known/assetlinks.json。顶点须有一条被代理的 DNS 记录（内容随意，
+# 例如 AAAA 100::），该路由才会生效；此路径不要挂 Access。
+# [[routes]]
+# pattern = "example.com/.well-known/*"
+# zone_name = "example.com"
+
 # 账号相关配置（worker.js 从 env 读）。PANEL_AUD 属半敏感，建议用
 # `wrangler secret put PANEL_AUD` 或面板设为 secret，而非提交进本文件。
 [vars]
@@ -26,6 +33,8 @@ ZONE_SUFFIX = ".example.com"                     # 允许的节点域名后缀�
 # FAST_SELF_URL = "https://term-fast.example.com:2096"
 # PANEL_AUD 用 secret 注入，不写这里
 # SEED_NODES = '[]'                              # 可选：初始节点表 JSON
+# Android App Links 验证文件全文（配合上面的 apex 路由；指纹取签名证书 SHA-256）：
+# ASSETLINKS = '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"uk.dogeliangspace.term","sha256_cert_fingerprints":["AA:BB:…"]}}]'
 
 # 盒控制面服务令牌(Cloudflare Access → Service Auth 创建,加入各节点 term 应用策略):
 #   wrangler secret put SVC_TOKEN_ID
