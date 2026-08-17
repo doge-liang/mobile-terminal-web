@@ -132,6 +132,36 @@ for ((i=0; i<NP; i++)); do
   SSH "${P_OSSH[i]}" true >/dev/null 2>&1 || die "池 ${P_NAME[i]} 的源站 ${P_OSSH[i]} 不可达。"
 done
 
+# 中转机 nginx 预检(仅入池)：provision 要到第 8 步才发现端口被占/遗留 stream 块缺 include，
+# 但那时源站侧(DNS、wg 对端、站点块、env)已经落地——半配置。这里把两项判断前移到触碰
+# 任何机器之前。「:PORT 在监听且 stream.d 里有指向本池源站的透传」是池化合法复用(SHARED_L4)。
+# nginx -T 先捕获再匹配(见 provision 里 SIGPIPE/pipefail 教训)。
+if [ "$DOWN" = 0 ]; then
+  for ((i=0; i<NP; i++)); do
+    verdict=$(SSH "$JUMP_SSH" $JSUDO bash -s -- "${P_PORT[i]}" "${P_OWG[i]}" <<'REMOTE'
+PORT="$1"; OWG="$2"
+listening=0; ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q . && listening=1
+shared=0; grep -qsE "^[[:space:]]*proxy_pass[[:space:]]+$OWG:$PORT;" /etc/nginx/stream.d/*.conf 2>/dev/null && shared=1
+if [ "$listening" = 1 ] && [ "$shared" = 0 ]; then echo PORT_TAKEN; fi
+dump=$(nginx -T 2>/dev/null) || true
+if printf '%s\n' "$dump" | grep -E '^[[:space:]]*stream[[:space:]]*\{' >/dev/null \
+   && ! printf '%s\n' "$dump" | grep -E '^[[:space:]]*include[[:space:]]+/etc/nginx/stream\.d/\*\.conf;' >/dev/null; then
+  echo FOREIGN_STREAM_NO_INCLUDE
+fi
+echo END
+REMOTE
+    ) || die "中转机 $JUMP_SSH 的 nginx 预检执行失败。"
+    case "$verdict" in
+      *PORT_TAKEN*)
+        die "池 ${P_NAME[i]}：中转机 :${P_PORT[i]} 已被非本池的监听占用(遗留手写 stream 块或其它服务)，且 stream.d 里没有指向 ${P_OWG[i]}:${P_PORT[i]} 的透传。请先释放该端口，或用 --pool 只做其它池。未触碰任何机器。" ;;
+      *FOREIGN_STREAM_NO_INCLUDE*)
+        die "中转机 nginx 已有 stream{} 但未 include /etc/nginx/stream.d/*.conf。请在该 stream{} 内加一行 include /etc/nginx/stream.d/*.conf; 并 nginx -t && nginx -s reload 后重跑。未触碰任何机器。" ;;
+      *END*) : ;;
+      *) die "中转机 nginx 预检输出异常：$verdict" ;;
+    esac
+  done
+fi
+
 # ── 尾号：反查各池源站 wg 配置 ───────────────────────────────────────────────
 # 只拉 `# relay <ip>` 与 `AllowedIPs` 两类行(私钥绝不过线)。输出每行「<ip或-> <尾号>」。
 peers_of() {
