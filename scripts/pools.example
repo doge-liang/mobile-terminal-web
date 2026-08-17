@@ -1,0 +1,18 @@
+# 加速池表模板 —— 复制为 scripts/pools 并按你的拓扑填写（真实池表不进仓库）。
+# 供 scripts/pool-add-jump.sh 读取：每行一个池，空格分隔 9 列；# 开头为注释。
+#
+#   <name>          池名(仅作 --pool 选择与日志用)
+#   <origin_ssh>    源站 ssh 别名(需免密)；源站就是控制机本身时可用 root@127.0.0.1
+#   <origin_pubip>  源站公网 IP(中转机 wg 的 Endpoint)
+#   <origin_wg_ip>  源站在该池 wg 子网内的地址(.1)；跳板尾号自动分配为同前缀 .N
+#   <wg_subnet>     该池 wg 子网(CIDR)
+#   <pool_domain>   池共享父域(配对 Cookie 的 Domain=)；跳板域名 = <label>.<pool_domain>
+#   <fast_port>     快速端口(源站 caddy-fast 监听、中转机 nginx L4 透传)
+#   <wg_if>         源站与中转机上的 wg 接口名；同一台中转机服务多个池时每池必须不同
+#   <wg_port>       源站 wg 监听 UDP 端口；同一台源站上多个 wg 接口必须各用不同端口
+#
+# 各池的 <wg_if>/<wg_subnet>/<fast_port> 互不相同，才能让一台中转机同时进多个池。
+#
+# name  origin_ssh        origin_pubip    origin_wg_ip  wg_subnet     pool_domain     fast_port  wg_if        wg_port
+# t2    node2             203.0.113.20    10.78.0.1     10.78.0.0/24  t2.example.com  2096       wgfast       51820
+# t1    root@127.0.0.1    203.0.113.10    10.79.0.1     10.79.0.0/24  t1.example.com  2097       wgfast-self  51821
