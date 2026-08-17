@@ -4,6 +4,7 @@ node_modules/
 .auth-secret
 metrics/
 scripts/nodes
+scripts/pools
 box/env
 box/nodes
 .deploy-prev.tgz

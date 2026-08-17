@@ -119,6 +119,7 @@ wrangler deploy
 - **快速通道**（可选，`FAST_HOST`，**端到端加密**）：为降低晚高峰经 Cloudflare 的延迟，可另建一条 DNS 直指跳板机、跳板上 nginx stream 做**纯 TCP 转发**（只搬密文、不持私钥）→ WireGuard → 本机终结 TLS 的旁路。浏览器到本机是一条完整 TLS 会话，中继即使被入侵也只见密文。此拓扑是可选优化，非必需
 - **白名单唯一准入**：快速通道凭证只能通过配对获得——在主域名打开 `/pair`（先过 Access 邮箱 OTP）→ 签发一次性配对链接（60 秒、单次有效）→ 跳转快速域名种下 HMAC 签名 Cookie（30 天、HttpOnly/Secure）。伪造、过期、重放均被拒绝。吊销全部设备：删除 `.auth-secret` 并重启
 - **通道池**（可选，Phase 2）：一台源站可挂多台跳板机（如 `dmit-01.t2.<domain>` 等共享父域的多条通道）。主域名 `/fast` 选路页并发测速全部成员、跳最快的一条（入口不依赖池内任一成员存活）；配对 Cookie 经 `FAST_COOKIE_DOMAIN` 全池共享；前端加载时测速改道（仅当前通道不通或明显更慢且尚未连上时），传输链连续失败时自动向存活成员切换（5 分钟限 2 次防振荡）。探测端点 `/net/probe` 免鉴权、仅回 204 无数据。`/fast?stay=1` 只测速不跳转，可当池状态页用；面板 Worker 亦经服务令牌读 `/net/pool` 聚合出按跳板机分组的池状态视图（时延在浏览器端实测）
+- **扩池**：`scripts/provision-fast-relay.sh` 建/拆「一台跳板 × 一个池」（幂等，DNS、证书、WireGuard、nginx L4、节点 env 一并处理）；`scripts/pool-add-jump.sh <ssh 别名> <公网 IP> [--sudo] [--down] [--dry-run]` 是它的包装——读 `scripts/pools`（gitignore，模板 `scripts/pools.example`）里的池表，自动从各源站 wg 配置反查空闲尾号，一条命令把一台跳板加进（或摘出）全部池。前提只有三条：控制机对该机免密 ssh、机上已有 nginx、`~/.cf_token` 可读
 
 ## 传输协议
 
